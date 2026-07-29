@@ -10,6 +10,10 @@
   <b>将 AI 聊天接入通讯软件的连接与管理程序</b>
 </p>
 
+<p align="center">
+    <img src="./docs/assets/screenshots/dashboard.png" width="80%" alt="">
+</p>
+
 <p>
   实现各类通讯软件与 AI 无限制对话，提供 API 配置、提示词编辑、人设管理、世界书、聊天记录管理和插件功能等。
 </p>

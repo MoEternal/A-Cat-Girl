@@ -1,7 +1,7 @@
 <div align="center">
 
 <p align="center">
-    <img src="./docs/assets/screenshots/catgirl-logo.png" width="50%" alt="">
+    <img src="./docs/assets/screenshots/catgirl-logo.png" width="20%" alt="">
 </p>
 
 <h1>《一只猫娘 · A Cat Girl》</h1>

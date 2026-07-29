@@ -1,0 +1,25 @@
+{
+  "id": "recall",
+  "name": "同步撤回",
+  "version": "1.0.0",
+  "description": "在可撤回窗口内同步回滚本轮聊天记录、已发送回复与记忆状态。",
+  "entrypoint": "plugin.py",
+  "author": "MoEternal",
+  "min_app_version": "1.0.0",
+  "default_enabled": true,
+  "permissions": [],
+  "hooks": ["on_message_recall"],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "recall_window_seconds": {
+        "type": "integer",
+        "title": "撤回有效时间（秒）",
+        "description": "在此时间范围内用户撤回消息后，AI将同步撤回；超过窗口时保持静默；非QQ群聊管理员上限为 120 秒。",
+        "default": 120,
+        "minimum": 1,
+        "maximum": 600
+      }
+    }
+  }
+}

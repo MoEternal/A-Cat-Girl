@@ -1,0 +1,41 @@
+[project]
+name = "catgirl"
+version = "1.0.0"
+description = "QQ AI configuration manager for NapCat"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "cryptography>=48.0.1,<49",
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
+    "pillow>=11,<13",
+    "pydantic-settings>=2.7,<3",
+    "regex>=2026.7,<2027",
+    "sqlalchemy>=2.0,<3",
+    "tiktoken>=0.9,<1",
+    "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+desktop = [
+    "pywebview>=5.4,<7",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.15,<7",
+    "pytest>=8,<10",
+    "pytest-cov>=6,<8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend/src/catgirl"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend/src"]
+testpaths = ["tests"]
+addopts = "-q"

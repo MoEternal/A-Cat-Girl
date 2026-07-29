@@ -1,0 +1,132 @@
+{
+  "id": "memory_system",
+  "name": "记忆系统（测试）",
+  "version": "0.1.0 beta",
+  "description": "适配单人或多人长篇剧情：情感主线、角色关系、任意支线、主观知情范围与长期事件召回。",
+  "entrypoint": "plugin.py",
+  "author": "MoEternal",
+  "min_app_version": "1.0.0",
+  "default_enabled": false,
+  "permissions": ["model.generate.selected_provider", "message.history.read", "prompt.inject", "state.persist", "message.send.text"],
+  "hooks": ["on_startup", "on_user_message", "before_prompt_compile", "after_model_response"],
+  "initial_state": {},
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "lead_character_names": {
+        "type": "string",
+        "title": "核心角色名称（可选）",
+        "description": "可填写一个或多个，逗号/换行分隔；留空时根据剧情自动识别。也可在 QQ 使用 /记忆核心。",
+        "format": "textarea",
+        "default": ""
+      },
+      "main_cast_names": {
+        "type": "string",
+        "title": "主要角色名称（可选）",
+        "description": "除核心角色外需要重点追踪的人物，逗号或换行分隔；留空也可自动发现。",
+        "format": "textarea",
+        "default": ""
+      },
+      "relationship_pace": {
+        "type": "string",
+        "title": "恋爱推进节奏",
+        "description": "约束记忆整理时对关系变化的判断幅度；慢热更克制，戏剧化允许更明显但仍必须有剧情证据。",
+        "enum": ["slow", "balanced", "dramatic"],
+        "enum_names": ["慢热", "均衡", "戏剧化"],
+        "default": "balanced"
+      },
+      "auto_analyze": {
+        "type": "boolean",
+        "title": "自动整理每轮记忆",
+        "description": "模型回复后静默调用当前供应商，不向 QQ 发送分析结果。",
+        "default": true
+      },
+      "analysis_max_tokens": {
+        "type": "integer",
+        "title": "单轮整理回复上限",
+        "description": "每轮静默整理可使用的最大输出 token；提高后能记录更多细节，但会增加调用成本。",
+        "default": 2400,
+        "minimum": 512,
+        "maximum": 8192
+      },
+      "analysis_temperature": {
+        "type": "number",
+        "title": "整理温度",
+        "description": "静默整理模型的随机度；长期记忆适合较低数值，以减少同一事实出现不同写法。",
+        "default": 0.15,
+        "minimum": 0,
+        "maximum": 1
+      },
+      "detail_audit_interval": {
+        "type": "integer",
+        "title": "细节补漏间隔（轮）",
+        "description": "每隔若干轮重新检查近期原文；设为 0 可关闭。",
+        "default": 8,
+        "minimum": 0,
+        "maximum": 50
+      },
+      "detail_audit_lookback_rounds": {
+        "type": "integer",
+        "title": "细节补漏回看轮数",
+        "description": "触发补漏时重新读取最近多少轮用户与模型正文；提高后更容易找回跨轮细节，但会增加该次分析的输入 token。",
+        "default": 6,
+        "minimum": 2,
+        "maximum": 20
+      },
+      "recent_event_count": {
+        "type": "integer",
+        "title": "固定保留近期事件数",
+        "description": "每轮无论关键词是否命中，都会注入的最近事件数量；提高可增强短期连贯性，也会增加上下文占用。",
+        "default": 8,
+        "minimum": 2,
+        "maximum": 30
+      },
+      "recalled_event_count": {
+        "type": "integer",
+        "title": "相关旧事件召回数",
+        "description": "根据当前消息从较早事件中选出的最大数量；提高可能找回更多往事，也更容易带入弱相关内容。",
+        "default": 12,
+        "minimum": 2,
+        "maximum": 40
+      },
+      "recalled_memory_count": {
+        "type": "integer",
+        "title": "人物记忆与事实召回数",
+        "description": "每轮最多注入多少条主观记忆和结构化事实，不包含固定事实与未完成承诺。",
+        "default": 16,
+        "minimum": 2,
+        "maximum": 50
+      },
+      "injection_char_limit": {
+        "type": "integer",
+        "title": "单轮记忆注入字符上限",
+        "description": "插件一次加入模型 Prompt 的记忆字符总上限；达到上限时舍弃尾部低优先级内容，避免挤占正文上下文。",
+        "default": 14000,
+        "minimum": 2000,
+        "maximum": 50000
+      },
+      "active_event_limit": {
+        "type": "integer",
+        "title": "分层压缩触发事件数",
+        "description": "独立事件超过此数量后，把最旧的一批压缩成远期篇章；人物状态、事实、承诺和物品台账不会被删除。",
+        "default": 160,
+        "minimum": 40,
+        "maximum": 1000
+      },
+      "compact_batch_size": {
+        "type": "integer",
+        "title": "每次压缩旧事件数",
+        "description": "触发分层压缩时，一次交给模型合并的旧事件数量；数值越大调用次数越少，但单篇概括会更粗。",
+        "default": 30,
+        "minimum": 10,
+        "maximum": 100
+      },
+      "inject_genre_guardrails": {
+        "type": "boolean",
+        "title": "注入剧情连续性规则",
+        "description": "保护情感主线、每个角色的独立动机、支线因果和知情边界。",
+        "default": true
+      }
+    }
+  }
+}

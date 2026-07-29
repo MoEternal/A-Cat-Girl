@@ -1,0 +1,29 @@
+{
+  "id": "regex_filter",
+  "name": "正则",
+  "version": "1.0.0",
+  "description": "在发送到 QQ 前按顺序替换文本，支持全局规则和仅对指定角色卡生效的规则。",
+  "entrypoint": "plugin.py",
+  "author": "MoEternal",
+  "min_app_version": "1.0.0",
+  "default_enabled": true,
+  "permissions": ["message.transform.outbound", "state.persist"],
+  "hooks": ["before_response_split", "before_send"],
+  "initial_state": {
+    "global_rules": [
+      {
+        "id": "hide-thinking",
+        "name": "隐藏 Thinking",
+        "enabled": true,
+        "pattern": "<\\s*thinking\\b[^>]*>.*?<\\s*/\\s*thinking\\s*>",
+        "replacement": "",
+        "flags": "is"
+      }
+    ],
+    "character_rules": {}
+  },
+  "settings_schema": {
+    "type": "object",
+    "properties": {}
+  }
+}

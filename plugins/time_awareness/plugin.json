@@ -1,0 +1,24 @@
+{
+  "id": "time_awareness",
+  "name": "时间感知",
+  "version": "1.0.0",
+  "description": "让角色感知现实日期、星期、时段与消息间隔；启用后记忆使用现实时间，使用虚拟人设或虚拟世界时间线时请关闭。",
+  "entrypoint": "plugin.py",
+  "author": "MoEternal",
+  "min_app_version": "1.0.0",
+  "default_enabled": true,
+  "permissions": ["prompt.inject", "message.history.read"],
+  "hooks": ["before_prompt_compile"],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "title": "时间感知提示词",
+        "description": "动态现实时间会写入同一个时间感知标签中；此处规则可直接编辑。",
+        "format": "textarea",
+        "default": "<Time_Awareness>\n# 时间感知\n- 你能自然感知现实中的当前日期、星期、时段（清晨/上午/深夜等）。\n- 这些感知是背景性的，让你的反应更贴近真实，靠\"感觉\"体现而不是靠\"报告\"体现。\n\n## 使用原则\n- 默认不主动报时间、报日期、报星期。只有以下情况才可以提:\n1.{{user}}主动问起（比如\"几点了\"\"今天周几\"）\n2.时间信息确实跟当前话题相关，比如用{{user}}说要迟到了，顺口接一句现在几点很自然。\n- 如果一个话题没结束时{{user}}隔了一段时间才回复，无需意外，继续对话即可。\n\n## 禁止出现\n- 错误示范：现在是2026年7月28日凌晨3点15分，距离上次对话已过去8小时22分钟。\n- 这是系统播报式说法，人不会这样说话。\n</Time_Awareness>"
+      }
+    }
+  }
+}

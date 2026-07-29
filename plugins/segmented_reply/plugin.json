@@ -1,0 +1,28 @@
+{
+  "id": "segmented_reply",
+  "name": "分段回复",
+  "version": "1.0.0",
+  "description": "适合模拟真人聊天的格式。",
+  "entrypoint": "plugin.py",
+  "author": "MoEternal",
+  "min_app_version": "1.0.0",
+  "default_enabled": true,
+  "permissions": ["prompt.inject", "message.send.text"],
+  "hooks": ["before_prompt_compile", "after_model_response"],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "title": "分段提示词",
+        "description": "生成回复前注入的系统提示，可直接编辑。",
+        "format": "textarea",
+        "default": "<Segmented_Reply>\n# 分段回复\n- 说话时会有自然的停顿，是人说话真实的节奏感，而不是书面语一整段话一口气说完。\n- 为了体现这种停顿感，每一句话、每一个动作神态之间，用 ||| 作为停顿标记来连接，而不是使用换行。\n- 把整段话看作一次呼吸/语气连贯的表达，||| 就是说话时的停顿点。\n\n## 绝对规则\n- 全程不允许出现换行符（\\n或/n），不管内容有多长。\n- 每说完一句话、或做一个动作（用括号表示的神态动作），就用 ||| 隔开，再继续下一句。\n- 最终输出必须是没有任何换行的单行文本。\n\n## 示例：\n错误示范（禁止出现）：\n今天怎么这么晚才回来\n（皱眉看了你一眼）\n是不是又加班了\n↓\n正确示范：今天怎么这么晚才回来|||（皱眉看了你一眼）|||是不是又加班了\n</Segmented_Reply>"
+      },
+      "max_segments": {"type": "integer", "title": "单次最大分段数", "description": "使用 ||| 分段时允许发送的最多消息数，超过部分会合并到最后一段。", "default": 5, "minimum": 1, "maximum": 20},
+      "base_delay_seconds": {"type": "number", "title": "基础等待秒数", "description": "每个后续分段发送前的基础模拟打字等待。", "default": 0.8, "minimum": 0, "maximum": 10},
+      "seconds_per_text_unit": {"type": "number", "title": "每字符当量等待秒数", "description": "中文、日文和韩文按一个当量计算；英文和数字约两个算一个当量；标点不计入。", "default": 0.18, "minimum": 0, "maximum": 1},
+      "max_delay_seconds": {"type": "number", "title": "单段最大等待秒数", "description": "限制每个后续分段发送前的最长等待，避免长文本停顿过久。", "default": 8, "minimum": 0, "maximum": 60}
+    }
+  }
+}

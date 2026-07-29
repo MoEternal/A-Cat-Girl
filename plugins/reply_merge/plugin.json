@@ -1,0 +1,25 @@
+{
+  "id": "reply_merge",
+  "name": "回复合并",
+  "version": "1.0.0",
+  "description": "短时间内连续发送的消息会自动合并发送给AI，实现用户端可分段回复。设为 0 秒时不合并。",
+  "entrypoint": "plugin.py",
+  "author": "MoEternal",
+  "min_app_version": "1.0.0",
+  "default_enabled": true,
+  "permissions": [],
+  "hooks": [],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "message_batch_delay": {
+        "type": "number",
+        "title": "合并等待时间（秒）",
+        "description": "每次发送新消息后自动挂起等待；期间的消息会合并为一轮。设为 0 时逐条立即回复。",
+        "default": 4,
+        "minimum": 0,
+        "maximum": 60
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "sticker_reply",
+  "name": "表情回复",
+  "version": "1.0.0",
+  "description": "自动按情绪分类向模型提供可选表情。（需自行添加表情图片）",
+  "entrypoint": "plugin.py",
+  "author": "MoEternal",
+  "min_app_version": "1.0.0",
+  "default_enabled": false,
+  "permissions": ["prompt.inject", "message.send.image", "assets.read"],
+  "hooks": ["on_user_message", "before_prompt_compile", "after_model_response"],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "probability": {"type": "number", "title": "模型使用概率", "description": "每轮把表情说明加入提示词的概率", "default": 0.1, "minimum": 0, "maximum": 1},
+      "request_keywords": {"type": "string", "title": "直接触发关键词", "description": "逗号或换行分隔", "default": "发个表情包"},
+      "positive_categories": {"type": "string", "title": "直接触发分类", "description": "逗号或换行分隔", "default": "happy,like,confused,proud,thinking,neutral,cute,smug,wink,tease,cool"},
+      "max_asset_mb": {"type": "number", "title": "单个表情大小上限（MB）", "description": "超过上限的图片会在发送时自动压缩并覆盖原文件。", "default": 16, "minimum": 0.1, "maximum": 32}
+    }
+  }
+}

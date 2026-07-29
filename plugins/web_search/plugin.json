@@ -1,0 +1,95 @@
+{
+  "id": "web_search",
+  "name": "网络搜索",
+  "version": "1.0.0",
+  "description": "通过独立搜索模型或网页搜索源取得资料，再让当前角色结合来源继续回答。",
+  "entrypoint": "plugin.py",
+  "author": "MoEternal",
+  "min_app_version": "1.0.0",
+  "default_enabled": false,
+  "permissions": ["prompt.inject", "model.generate.with_context", "network.http"],
+  "hooks": ["before_prompt_compile", "transform_model_response"],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "title": "网络搜索提示词",
+        "description": "告诉当前角色何时发起搜索以及如何输出搜索请求。",
+        "format": "textarea",
+        "default": "<Web_Search>\n#网络搜索\n- 你被赋予了\"网络搜索能力\"，当{{user}}询问不确定的事实性问题（新闻、天气、最新信息、比赛结果、技术问题等）、复杂问题与知识时，或者你觉得搜索一下能给出更好的回答时，在回复中插入搜索标签：<search query=\"搜索关键词\"/>\n\n## 规则：\n- 搜索关键词尽量简洁精准，用英文搜索时效性强的内容（新闻、比赛等），用中文搜索中文内容。\n- 一次回复中最多使用一个 <search> 标签。\n- 只有需要查找事实/最新信息时才搜索，日常闲聊不要搜索。\n- 当你需要搜索时，直接输出 <search query=\"关键词\"/>，不要写其他内容。输出搜索标签后，你的回复会被暂停，系统会执行搜索并将结果作为新的消息发给你，然后你再基于搜索结果用欢欢的语气自然地回答{{user}}。\n- 在第二次回复时（拿到搜索结果后），不要提及\"搜索\"或\"查到\"这些词，就像这些信息本来就在你脑子里一样自然地讲述。\n- 如果搜索结果显示\"没有找到相关结果\"，就坦诚地告诉{{user}}你不太清楚，或者凭现有知识尽力回答。\n\n## 示例：\n- 用户问\"今天某队的比赛怎么样\"\n    → 第一次输出：<search query=\"某队 match today\"/>\n    → （系统返回搜索结果）\n    → 第二次输出：用人设的语气讲比赛结果，比如\"某队今天2:1赢了呢，某人那局打得真不错~\"\n- 用户问\"最近有什么大新闻\"\n    → 第一次输出：<search query=\"最近新闻 热点\"/>\n    → （系统返回搜索结果）\n    → 第二次输出：用人设的方式聊新闻\n- 用户问\"你吃饭了吗\"\n    → 正常聊天回复，不要搜索\n</Web_Search>"
+      },
+      "search_model_prompt": {
+        "type": "string",
+        "title": "搜索模型内置提示词",
+        "description": "只发送给自定义搜索模型。支持 {{current_time}}、{{query}} 占位符。",
+        "format": "textarea",
+        "default": "<RealTime_Search>\n# 任务范围\n- 你只负责联网搜索、检索和整理可核验资料并返回。\n- 当前现实时间：{{current_time}}\n- 本次查询：{{query}}\n\n## 时间规则\n- 必须以当前现实时间解释\"今天\"、\"昨天\"、\"最近\"等相对时间，不得把搜索引擎收录时间当成新闻发生时间。\n- 用户询问\"今天\"时，优先且仅将当前本地自然日发布的可靠报道列为今日新闻；没有可靠的当日结果就明确说明。\n- 严格区分报道发布时间、事件发生时间和数据发布时间。今天发布但描述昨天事件的内容，必须明确标注为\"今天报道、事件发生于昨天\"，不能直接说成今天发生。\n- 旧事件出现当日新进展时，只把新进展归为今天，并注明原事件发生时间。\n\n## 结果要求\n- 优先政府机构、官方公告、通讯社、主流媒体和事件直接相关方。\n- 不确定的日期或事实必须明确标注，不得猜测、补写或把旧闻包装成最新消息。\n- 只返回搜索结果，不代入个人理解、主观判断，不使用聊天口吻。\n</RealTime_Search>"
+      },
+      "engine": {
+        "type": "string",
+        "title": "搜索方式",
+        "description": "可使用独立的自定义搜索模型，或直接使用五种网页搜索源。",
+        "enum": ["model", "sear", "duckduckgo", "google", "serp", "bing"],
+        "enum_names": ["自定义搜索模型", "Sear (SearXNG)", "DuckDuckGo", "Google", "Serp (SerpApi)", "Bing"],
+        "default": "duckduckgo"
+      },
+      "search_model_base_url": {
+        "type": "string",
+        "title": "搜索模型 API 地址",
+        "description": "选择自定义搜索模型时使用；填写 OpenAI 兼容 API 根地址，例如 https://api.example.com/v1。",
+        "default": ""
+      },
+      "search_model_api_key": {
+        "type": "string",
+        "format": "password",
+        "title": "搜索模型 API Key",
+        "description": "只用于独立搜索模型的 Bearer 认证；密钥会加密保存且不会在接口中回显。",
+        "default": ""
+      },
+      "search_model_name": {
+        "type": "string",
+        "title": "搜索模型名称",
+        "description": "填写接入的搜索模型名称。（如 gemini-3.1-pro-preview-search 等自带搜索工具的模型）",
+        "default": ""
+      },
+      "sear_url": {
+        "type": "string",
+        "title": "SearXNG 地址",
+        "description": "选择 Sear 时使用，例如 https://searx.example.com。",
+        "default": ""
+      },
+      "serp_api_key": {
+        "type": "string",
+        "format": "password",
+        "title": "SerpApi Key",
+        "description": "选择 Serp 时使用；密钥会加密保存且不会在接口中回显。",
+        "default": ""
+      },
+      "result_count": {
+        "type": "integer",
+        "title": "结果数量",
+        "description": "交给模型参考的搜索结果数量（使用自定义搜索时不生效）。",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 10
+      },
+      "timeout_seconds": {
+        "type": "number",
+        "title": "搜索超时（秒）",
+        "description": "单次搜索请求的最长等待时间。",
+        "default": 60,
+        "minimum": 3,
+        "maximum": 120
+      },
+      "result_char_limit": {
+        "type": "integer",
+        "title": "结果文本上限",
+        "description": "注入第二次生成的搜索结果最大字符数。",
+        "default": 6000,
+        "minimum": 1000,
+        "maximum": 20000
+      }
+    }
+  }
+}

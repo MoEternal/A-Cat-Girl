@@ -152,6 +152,8 @@ API 配置导出文件包含完整 API Key，只能保存到可信目录。管�
 
 ## 🛠️ 本地开发
 
+**《一只猫娘》插件开发请参阅 [插件开发指南](docs/PLUGIN_DEVELOPMENT.md)。**
+
 项目使用 Python 3.12、FastAPI、Vue 3、TypeScript 和 SQLite。
 
 Windows 开发环境可运行：
@@ -177,8 +179,6 @@ npx playwright test
 ```powershell
 & '.\scripts\package-public.ps1'
 ```
-
-**《一只猫娘》插件开发请参阅 [插件开发指南](docs/PLUGIN_DEVELOPMENT.md)。**
 
 ## 📌 上游源码说明
 

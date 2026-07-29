@@ -178,7 +178,7 @@ npx playwright test
 & '.\scripts\package-public.ps1'
 ```
 
-第三方插件开发请参阅 [插件开发指南](docs/PLUGIN_DEVELOPMENT.md)。
+**《一只猫娘》插件开发请参阅 [插件开发指南](docs/PLUGIN_DEVELOPMENT.md)。**
 
 ## 📌 上游源码说明
 

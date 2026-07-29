@@ -178,6 +178,8 @@ npx playwright test
 & '.\scripts\package-public.ps1'
 ```
 
+第三方插件开发请参阅 [插件开发指南](docs/PLUGIN_DEVELOPMENT.md)。
+
 ## 📌 上游源码说明
 
 本项目使用了 **酒馆（SillyTavern）** 的部分源码，用于提示词、预设、角色卡、世界书及相关配置能力的实现与兼容。

@@ -1,9 +1,17 @@
 <div align="center">
 
+<p align="center">
+    <img src="./docs/assets/screenshots/catgirl-logo.png" width="20%" alt="">
+</p>
+
 <h1>《一只猫娘 · A Cat Girl》</h1>
 
 <p>
   <b>将 AI 聊天接入通讯软件的连接与管理程序</b>
+</p>
+
+<p align="center">
+    <img src="./docs/assets/screenshots/dashboard.png" width="100%" alt="">
 </p>
 
 <p>
@@ -41,6 +49,14 @@
 - **统一导入导出：** 除了支持导入常见“酒馆”文件，也可导出预设、API、提示词、人设、聊天记录和记忆状态。
 - **插件系统：** 已内置若干插件功能，第三方插件也使用同一套插件接口，支持设置、状态、动作、定时任务和管理页面扩展。
 
+<p align="center">
+    <img src="./docs/assets/screenshots/presets.png" width="100%" alt="">
+</p>
+
+<p align="center">
+    <img src="./docs/assets/screenshots/prompt-editor.png" width="100%" alt="">
+</p>
+
 ## 🧩 内置插件
 
 目前包含以下 10 个内置插件：
@@ -57,6 +73,10 @@
 | 时间感知 | 开启 | 向模型提供部署环境的本地日期、星期、时段。 |
 | 睡眠模拟 | 关闭 | 双方互道休眠关键词后进入睡眠状态，可暂存消息，若用户在此期间发送新消息，会在醒来时统一回复。 |
 | 网络搜索 | 关闭 | 通过搜索模型或网页搜索源获取实时资料。 |
+
+<p align="center">
+    <img src="./docs/assets/screenshots/plugins.png" width="100%" alt="">
+</p>
 
 第三方 Python 插件与主程序运行在同一进程权限下，并不是安全沙箱。只安装来源可信、内容可审查的插件。
 
@@ -131,6 +151,8 @@ SQLite 使用 WAL 模式。迁移数据库前应先停止程序，并将 `catgir
 API 配置导出文件包含完整 API Key，只能保存到可信目录。管理后台使用 HttpOnly 会话 Cookie；即使已经设置管理员密码，也不应把管理端口直接开放到互联网。
 
 ## 🛠️ 本地开发
+
+**《一只猫娘》插件开发请参阅 [插件开发指南](docs/PLUGIN_DEVELOPMENT.md)。**
 
 项目使用 Python 3.12、FastAPI、Vue 3、TypeScript 和 SQLite。
 

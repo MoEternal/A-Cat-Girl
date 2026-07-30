@@ -13,6 +13,7 @@ const logsLoading = ref(false)
 const logsPaused = ref(false)
 const logError = ref('')
 const logViewport = ref<HTMLElement | null>(null)
+const logFollowsLatest = ref(true)
 let logTimer: number | undefined
 
 async function load() {
@@ -49,12 +50,22 @@ async function loadLogs(reset = false) {
     const entries = await api<RuntimeLog[]>(`/api/logs?after_id=${afterId}&limit=${reset ? 200 : 500}`)
     logs.value = reset ? entries : [...logs.value, ...entries].slice(-500)
     await nextTick()
-    if (logViewport.value) logViewport.value.scrollTop = logViewport.value.scrollHeight
+    if (logViewport.value && (reset || logFollowsLatest.value)) {
+      logViewport.value.scrollTop = logViewport.value.scrollHeight
+      logFollowsLatest.value = true
+    }
   } catch (reason) {
     logError.value = reason instanceof Error ? reason.message : '日志读取失败'
   } finally {
     logsLoading.value = false
   }
+}
+
+function updateLogFollowState() {
+  const viewport = logViewport.value
+  if (!viewport) return
+  const bottomGap = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+  logFollowsLatest.value = bottomGap <= 16
 }
 
 async function clearLogs() {
@@ -185,7 +196,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div v-if="logError" class="log-inline-error"><CircleAlert :size="15" />{{ logError }}</div>
-      <div ref="logViewport" class="log-viewport" role="log" aria-label="运行日志">
+      <div ref="logViewport" class="log-viewport" role="log" aria-label="运行日志" @scroll="updateLogFollowState">
         <div v-if="!logs.length" class="log-empty"><Terminal :size="18" />暂无日志</div>
         <div v-for="entry in logs" :key="entry.id" :class="['log-line', `level-${entry.level.toLowerCase()}`]">
           <time :datetime="entry.created_at">{{ logTime(entry.created_at) }}</time>

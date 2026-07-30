@@ -86,7 +86,7 @@ def create_app(
 
     app = FastAPI(
         title="A CAT GIRL API",
-        version="1.0.0",
+        version="1.0.1",
         lifespan=lifespan,
     )
     app.state.database = database

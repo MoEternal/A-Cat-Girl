@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import {
   Bot,
+  BrainCircuit,
   Check,
+  ChevronDown,
   ChevronsDown,
   ChevronsUp,
   CircleAlert,
@@ -35,14 +37,22 @@ const multiSelect = ref(false)
 const selectedMessageIds = ref<string[]>([])
 const editingMessageId = ref('')
 const editingContent = ref('')
+const editingFloorHeight = ref(0)
 const messageList = ref<HTMLElement | null>(null)
+const floorLimit = ref(100)
 const form = reactive({ title: '' })
 const routes = computed(() => Array.from(new Set(records.value.map((item) => item.external_id))))
 const routeRecords = computed(() => records.value.filter((item) => item.external_id === selectedRoute.value))
 const selected = computed(() => records.value.find((item) => item.id === selectedId.value) ?? null)
-const allMessagesSelected = computed(() => (
-  messages.value.length > 0 && selectedMessageIds.value.length === messages.value.length
+const visibleMessages = computed(() => (
+  floorLimit.value === 0 ? messages.value : messages.value.slice(-floorLimit.value)
 ))
+const allMessagesSelected = computed(() => (
+  visibleMessages.value.length > 0
+  && visibleMessages.value.every((message) => selectedMessageIds.value.includes(message.id))
+))
+
+const floorLimitStorageKey = 'catgirl.chat-history.floor-limit.v1'
 
 function routeLabel(route: string): string {
   const routeRecord = records.value.find((item) => item.external_id === route && item.is_active)
@@ -75,6 +85,11 @@ function speakerName(message: ChatMessage): string {
   return message.speaker_name?.trim() || roleLabel(message.role)
 }
 
+function messageReasoning(message: ChatMessage): string {
+  const reasoning = message.message_metadata?.reasoning
+  return typeof reasoning === 'string' ? reasoning.trim() : ''
+}
+
 function formatTime(value: string): string {
   const timestamp = /(?:Z|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`
   return new Intl.DateTimeFormat('zh-CN', {
@@ -87,6 +102,7 @@ async function selectRecord(record: ConversationRecord) {
   selectedMessageIds.value = []
   editingMessageId.value = ''
   editingContent.value = ''
+  editingFloorHeight.value = 0
   selectedId.value = record.id
   selectedRoute.value = record.external_id
   form.title = record.title
@@ -94,6 +110,7 @@ async function selectRecord(record: ConversationRecord) {
   notice.value = ''
   try {
     messages.value = await api<ChatMessage[]>(`/api/runtime/conversations/${encodeURIComponent(record.id)}/messages`)
+    await scrollToLatestMessage()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '聊天消息加载失败'
   }
@@ -199,7 +216,7 @@ function toggleMultiSelect() {
 function toggleSelectAll() {
   selectedMessageIds.value = allMessagesSelected.value
     ? []
-    : messages.value.map((message) => message.id)
+    : visibleMessages.value.map((message) => message.id)
 }
 
 async function removeSelectedMessages() {
@@ -224,7 +241,10 @@ async function removeSelectedMessages() {
   }
 }
 
-function startEditingMessage(message: ChatMessage) {
+function startEditingMessage(message: ChatMessage, event: MouseEvent) {
+  const trigger = event.currentTarget as HTMLElement | null
+  const floor = trigger?.closest<HTMLElement>('.history-message')
+  editingFloorHeight.value = Math.ceil(floor?.getBoundingClientRect().height ?? 0)
   editingMessageId.value = message.id
   editingContent.value = message.content
   error.value = ''
@@ -234,6 +254,41 @@ function startEditingMessage(message: ChatMessage) {
 function cancelEditingMessage() {
   editingMessageId.value = ''
   editingContent.value = ''
+  editingFloorHeight.value = 0
+}
+
+async function scrollToLatestMessage() {
+  await nextTick()
+  const list = messageList.value
+  if (!list || !visibleMessages.value.length) return
+  if (list.scrollHeight > list.clientHeight + 1) {
+    list.scrollTop = list.scrollHeight
+    return
+  }
+  list.lastElementChild?.scrollIntoView({ block: 'end' })
+}
+
+function restoreFloorLimit() {
+  try {
+    const value = localStorage.getItem(floorLimitStorageKey)
+    if (value === null) return
+    const stored = Number(value)
+    if (Number.isSafeInteger(stored) && stored >= 0) floorLimit.value = stored
+  } catch {}
+}
+
+function updateFloorLimit(event: Event) {
+  const requested = Number((event.target as HTMLInputElement).value)
+  floorLimit.value = Number.isFinite(requested)
+    ? Math.max(0, Math.min(Math.floor(requested), Number.MAX_SAFE_INTEGER))
+    : 100
+  selectedMessageIds.value = selectedMessageIds.value.filter((id) => (
+    visibleMessages.value.some((message) => message.id === id)
+  ))
+  try {
+    localStorage.setItem(floorLimitStorageKey, String(floorLimit.value))
+  } catch {}
+  void scrollToLatestMessage()
 }
 
 async function saveMessage(message: ChatMessage) {
@@ -285,7 +340,10 @@ async function exportRecord() {
   }
 }
 
-onMounted(() => void load())
+onMounted(() => {
+  restoreFloorLimit()
+  void load()
+})
 </script>
 
 <template>
@@ -327,23 +385,29 @@ onMounted(() => void load())
             <p>{{ conversationLabel(selected.external_id, selected.character_name) }} · {{ selected.message_count }} 条消息 · 总 {{ formatTokenCount(selected.total_tokens) }} tokens</p>
           </div>
           <div class="action-row">
+            <label class="history-floor-limit" title="0 表示显示全部楼层"><span>显示楼层</span><input :value="floorLimit" type="number" min="0" step="1" aria-label="显示楼层" @change="updateFloorLimit" /></label>
             <button class="icon-button" type="button" title="导出聊天记录" @click="exportRecord"><Upload :size="17" /></button>
             <button v-if="!selected.is_active" class="button primary" type="button" @click="activateRecord"><Check :size="16" />使用这份记录</button>
             <button class="button secondary" type="button" :disabled="saving" @click="saveTitle"><Save :size="16" />保存名称</button>
             <template v-if="multiSelect">
-              <button class="button secondary" type="button" :disabled="!messages.length" @click="toggleSelectAll">{{ allMessagesSelected ? '取消全选' : '全选' }}</button>
+              <button class="button secondary" type="button" :disabled="!visibleMessages.length" @click="toggleSelectAll">{{ allMessagesSelected ? '取消全选' : '全选' }}</button>
               <button class="button history-delete-selected" type="button" :disabled="!selectedMessageIds.length || deletingMessages" @click="removeSelectedMessages"><Trash2 :size="16" />删除所选（{{ selectedMessageIds.length }}）</button>
               <button class="icon-button" type="button" title="退出多选" @click="toggleMultiSelect"><X :size="17" /></button>
             </template>
-            <button v-else class="button secondary" type="button" :disabled="!messages.length" @click="toggleMultiSelect"><ListChecks :size="16" />多选</button>
+            <button v-else class="button secondary" type="button" :disabled="!visibleMessages.length" @click="toggleMultiSelect"><ListChecks :size="16" />多选</button>
             <button class="icon-button danger" type="button" title="删除聊天记录" @click="removeRecord"><Trash2 :size="17" /></button>
           </div>
         </div>
 
         <div class="history-message-list-shell">
-          <button v-if="messages.length" class="history-scroll-button history-scroll-top" type="button" title="滚动到最上方" @click="scrollMessages('top')"><ChevronsUp :size="16" /></button>
+          <button v-if="visibleMessages.length" class="history-scroll-button history-scroll-top" type="button" title="滚动到最上方" @click="scrollMessages('top')"><ChevronsUp :size="16" /></button>
           <div ref="messageList" class="history-message-list">
-            <article v-for="message in messages" :key="message.id" :class="['history-message', `role-${message.role}`, { selecting: multiSelect, 'selected-for-delete': selectedMessageIds.includes(message.id) }]">
+            <article
+              v-for="message in visibleMessages"
+              :key="message.id"
+              :class="['history-message', `role-${message.role}`, { selecting: multiSelect, 'selected-for-delete': selectedMessageIds.includes(message.id), 'editing-message': editingMessageId === message.id }]"
+              :style="editingMessageId === message.id && editingFloorHeight ? { minHeight: `${editingFloorHeight}px` } : undefined"
+            >
               <input v-if="multiSelect" v-model="selectedMessageIds" class="history-message-checkbox" type="checkbox" :value="message.id" :aria-label="`选择第 ${message.position + 1} 条消息`" />
               <span class="history-role-icon"><UserRound v-if="message.role === 'user'" :size="17" /><Bot v-else :size="17" /></span>
               <div class="history-message-body">
@@ -351,7 +415,7 @@ onMounted(() => void load())
                   <span class="history-message-identity"><strong>{{ speakerName(message) }}</strong><small>第 {{ message.position + 1 }} 层</small></span>
                   <span class="history-message-meta">
                     <span>{{ formatTime(message.created_at) }}<template v-if="message.model"> · {{ message.model }}</template></span>
-                    <button v-if="!multiSelect" class="icon-button history-message-edit-trigger" type="button" :title="`编辑第 ${message.position + 1} 层`" @click="startEditingMessage(message)"><Pencil :size="14" /></button>
+                    <button v-if="!multiSelect" class="icon-button history-message-edit-trigger" type="button" :title="`编辑第 ${message.position + 1} 层`" @click="startEditingMessage(message, $event)"><Pencil :size="14" /></button>
                   </span>
                 </header>
                 <div v-if="editingMessageId === message.id" class="history-message-editor">
@@ -361,13 +425,19 @@ onMounted(() => void load())
                     <button class="icon-button primary-icon" type="button" title="保存本层" :disabled="savingMessage || !editingContent.trim()" @click="saveMessage(message)"><Save :size="15" /></button>
                   </div>
                 </div>
-                <p v-else>{{ message.content }}</p>
+                <template v-else>
+                  <details v-if="messageReasoning(message)" class="history-reasoning">
+                    <summary><BrainCircuit :size="14" /><span>思考过程</span><ChevronDown :size="14" class="history-reasoning-chevron" /></summary>
+                    <pre>{{ messageReasoning(message) }}</pre>
+                  </details>
+                  <p>{{ message.content }}</p>
+                </template>
                 <small v-if="message.total_tokens" class="history-token-usage">{{ message.total_tokens }} tokens · {{ message.message_metadata.token_usage_estimated ? '本地分词' : 'API usage' }}</small>
               </div>
             </article>
             <div v-if="!messages.length" class="empty-state history-empty"><MessageSquareText :size="28" /><strong>这份记录还没有消息</strong></div>
           </div>
-          <button v-if="messages.length" class="history-scroll-button history-scroll-bottom" type="button" title="滚动到最下方" @click="scrollMessages('bottom')"><ChevronsDown :size="16" /></button>
+          <button v-if="visibleMessages.length" class="history-scroll-button history-scroll-bottom" type="button" title="滚动到最下方" @click="scrollMessages('bottom')"><ChevronsDown :size="16" /></button>
         </div>
       </template>
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import unicodedata
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -57,6 +58,8 @@ from .token_counter import count_text_tokens
 
 LOGGER = logging.getLogger("catgirl.runtime")
 
+ProviderFailureNotifier = Callable[[str, str | None, ModelClientError], Awaitable[None]]
+
 
 class ChatRuntimeError(RuntimeError):
     pass
@@ -97,6 +100,12 @@ class Invocation:
     user_persona_name: str
     input_text: str
     show_thoughts: bool
+
+
+@dataclass(frozen=True)
+class ProviderTarget:
+    id: str
+    name: str
 
 
 class ChatRuntime:
@@ -146,6 +155,7 @@ class ChatRuntime:
         media_refs: list[dict[str, str]] | None = None,
         model_images: list[NormalizedImage] | None = None,
         turn_id: str | None = None,
+        provider_failure_notifier: ProviderFailureNotifier | None = None,
     ) -> RuntimeReply:
         ensure_history_content_safe(text)
         media_refs = list(media_refs or [])
@@ -192,6 +202,7 @@ class ChatRuntime:
                 trigger_message_id=user_message.id,
                 model_images=list(model_images or []),
                 turn_id=turn_id,
+                provider_failure_notifier=provider_failure_notifier,
             )
 
     async def generate_from_action(self, plugin_id: str, payload: dict[str, Any]) -> RuntimeReply:
@@ -234,19 +245,19 @@ class ChatRuntime:
             for message in messages
         ]
         requested_tokens = max(1, min(int(max_tokens), 65535))
-        provider_ids = self._provider_failover_ids()
+        provider_targets = self._provider_failover_targets()
         last_error: ModelClientError | None = None
         with self.database.session_factory() as session:
             if session.get(Conversation, conversation_id) is None:
                 raise ChatRuntimeError("静默模型分析对应的聊天记录不存在")
-        for attempt, provider_id in enumerate(provider_ids, 1):
+        for attempt, target in enumerate(provider_targets, 1):
             with self.database.session_factory() as session:
                 preset = session.scalar(
                     select(ConfigurationPreset).where(ConfigurationPreset.is_active.is_(True))
                 )
                 if preset is None:
                     raise RuntimeConfigurationError("没有生效的组合预设")
-                provider = session.get(Provider, provider_id)
+                provider = session.get(Provider, target.id)
                 if provider is None or not provider.enabled:
                     continue
                 character = session.get(Character, preset.character_id) if preset.character_id else None
@@ -281,7 +292,13 @@ class ChatRuntime:
                     ) from exc
             except ModelClientError as exc:
                 last_error = exc
-                self._log_failover(provider_id, connection.model, attempt, len(provider_ids), exc)
+                self._log_failover(
+                    target.id,
+                    connection.model,
+                    attempt,
+                    len(provider_targets),
+                    exc,
+                )
         if last_error is not None:
             raise last_error
         raise RuntimeConfigurationError("当前预设没有可用的 API 供应商")
@@ -325,6 +342,7 @@ class ChatRuntime:
         trigger_message_id: str | None = None,
         model_images: list[NormalizedImage] | None = None,
         turn_id: str | None = None,
+        provider_failure_notifier: ProviderFailureNotifier | None = None,
     ) -> RuntimeReply:
         pre_compile = await self.plugin_manager.dispatch(
             "before_prompt_compile",
@@ -369,6 +387,7 @@ class ChatRuntime:
             additions,
             list(model_images or []),
             history_exclude_through=history_exclude_through,
+            provider_failure_notifier=provider_failure_notifier,
         )
         transform = await self.plugin_manager.dispatch(
             "transform_model_response",
@@ -676,7 +695,7 @@ class ChatRuntime:
                 show_thoughts=preset.show_thoughts,
             )
 
-    def _provider_failover_ids(self) -> list[str]:
+    def _provider_failover_targets(self) -> list[ProviderTarget]:
         with self.database.session_factory() as session:
             preset = session.scalar(
                 select(ConfigurationPreset).where(ConfigurationPreset.is_active.is_(True))
@@ -697,7 +716,7 @@ class ChatRuntime:
             ]
             if not ordered:
                 raise RuntimeConfigurationError("当前预设没有可用的 API 供应商")
-            return [provider.id for provider in ordered]
+            return [ProviderTarget(id=provider.id, name=provider.name) for provider in ordered]
 
     def _provider_connection(self, provider: Provider) -> ProviderConnection:
         return ProviderConnection(
@@ -716,16 +735,17 @@ class ChatRuntime:
         additions: list[dict[str, Any]],
         model_images: list[NormalizedImage],
         history_exclude_through: int = -1,
+        provider_failure_notifier: ProviderFailureNotifier | None = None,
     ) -> tuple[Invocation, ChatCompletionResult]:
-        provider_ids = self._provider_failover_ids()
+        provider_targets = self._provider_failover_targets()
         last_error: ModelClientError | None = None
-        for attempt, provider_id in enumerate(provider_ids, 1):
+        for attempt, target in enumerate(provider_targets, 1):
             invocation = self._build_invocation(
                 conversation_id,
                 input_text,
                 additions,
                 model_images,
-                provider_id=provider_id,
+                provider_id=target.id,
                 history_exclude_through=history_exclude_through,
             )
             try:
@@ -742,12 +762,27 @@ class ChatRuntime:
             except ModelClientError as exc:
                 last_error = exc
                 self._log_failover(
-                    provider_id,
+                    target.id,
                     invocation.connection.model,
                     attempt,
-                    len(provider_ids),
+                    len(provider_targets),
                     exc,
                 )
+                if provider_failure_notifier is not None:
+                    next_name = (
+                        provider_targets[attempt].name
+                        if attempt < len(provider_targets)
+                        else None
+                    )
+                    try:
+                        await provider_failure_notifier(target.name, next_name, exc)
+                    except Exception as notice_error:
+                        LOGGER.warning(
+                            "发送 API 故障转移通知失败 | provider=%s | %s: %s",
+                            target.id,
+                            type(notice_error).__name__,
+                            notice_error,
+                        )
         if last_error is not None:
             raise last_error
         raise RuntimeConfigurationError("当前预设没有可用的 API 供应商")

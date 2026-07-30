@@ -1,10 +1,11 @@
-A Cat Girl v1.0.0 Linux web edition
+A Cat Girl v1.0.1 Linux web edition
 
 1. Extract the entire tar.gz archive to a local directory.
 2. Run: bash start.sh
 3. The first launch installs uv, Python 3.12, and locked runtime dependencies.
 4. Open http://127.0.0.1:8732/ and create the administrator account.
-5. Keep data/, logs/, backups/, .env, and .venv/ when updating.
+5. Run `bash 一键更新.sh` for later releases. It keeps data/, logs/, backups/,
+   .env, and .venv/. A `一键更新.bat` wrapper is also included for Git Bash.
 6. This public package contains built-in plugins only and no private runtime data.
 
 The default listener is local-only. For remote access, use an SSH tunnel or edit

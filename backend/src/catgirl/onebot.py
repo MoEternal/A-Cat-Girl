@@ -25,7 +25,7 @@ from .chat_runtime import ChatRuntime
 from .database import ConfigurationPreset, ConversationTurn, Database, OneBotConfig, OneBotEvent, RuntimeAction
 from .media import parse_cq_message
 from .media_runtime import MediaReceiver
-from .model_client import ModelClientError
+from .model_client import ModelClientError, ModelHTTPError
 from .plugins.types import PluginAction, PluginEvent
 from .security import SecretBox
 
@@ -605,6 +605,29 @@ class OneBotGateway:
             for message in messages
             if message.trigger_message_id is not None
         ]
+        final_api_error_notified = False
+
+        async def notify_provider_failure(
+            failed_name: str,
+            next_name: str | None,
+            error: ModelClientError,
+        ) -> None:
+            nonlocal final_api_error_notified
+            if next_name is not None:
+                await self._send_api_failover_notice(
+                    first.connection,
+                    first.conversation_id,
+                    failed_name,
+                    next_name,
+                )
+                return
+            await self._send_api_error_notice(
+                first.connection,
+                first.conversation_id,
+                error,
+                provider_name=failed_name,
+            )
+            final_api_error_notified = True
         try:
             if trigger_ids:
                 turn = self.chat_runtime.begin_qq_turn(
@@ -642,6 +665,7 @@ class OneBotGateway:
                 ],
                 model_images=[item.normalized for item in received_images],
                 turn_id=turn_id,
+                provider_failure_notifier=notify_provider_failure,
             )
             if turn_id:
                 self.chat_runtime.mark_turn_completed(turn_id)
@@ -666,14 +690,15 @@ class OneBotGateway:
                 self.chat_runtime.mark_turn_failed(turn_id)
             for message in messages:
                 self._finish_event(message.event_key, "failed", f"{type(exc).__name__}: {exc}")
-            try:
-                await self._send_api_error_notice(
-                    first.connection,
-                    first.conversation_id,
-                    str(exc),
-                )
-            except OneBotError as notice_error:
-                LOGGER.error("发送 API 错误通知失败 | %s", notice_error)
+            if not final_api_error_notified:
+                try:
+                    await self._send_api_error_notice(
+                        first.connection,
+                        first.conversation_id,
+                        exc,
+                    )
+                except OneBotError as notice_error:
+                    LOGGER.error("发送 API 错误通知失败 | %s", notice_error)
         except Exception as exc:
             if turn_id:
                 self.turn_tasks.pop(turn_id, None)
@@ -687,11 +712,43 @@ class OneBotGateway:
                 exc,
             )
 
+    async def _send_api_failover_notice(
+        self,
+        connection: OneBotConnection,
+        conversation_id: str,
+        failed_name: str,
+        next_name: str,
+    ) -> None:
+        await self._send_temporary_api_notice(
+            connection,
+            conversation_id,
+            f"API配置·{failed_name} 调用失败，故障转移至 API配置·{next_name}",
+        )
+
     async def _send_api_error_notice(
         self,
         connection: OneBotConnection,
         conversation_id: str,
-        detail: str,
+        error: ModelClientError,
+        *,
+        provider_name: str = "",
+    ) -> None:
+        prefix = (
+            f"API配置·{provider_name} 调用失败，所有 API 配置均不可用。"
+            if provider_name
+            else "所有 API 配置均调用失败。"
+        )
+        await self._send_temporary_api_notice(
+            connection,
+            conversation_id,
+            f"{prefix}\n完整报错：\n{self._format_model_error(error)}",
+        )
+
+    async def _send_temporary_api_notice(
+        self,
+        connection: OneBotConnection,
+        conversation_id: str,
+        text: str,
     ) -> None:
         match = CONVERSATION_PATTERN.fullmatch(conversation_id)
         if match is None:
@@ -699,26 +756,40 @@ class OneBotGateway:
         message_type = match.group("message_type")
         action = "send_private_msg" if message_type == "private" else "send_group_msg"
         target_key = "user_id" if message_type == "private" else "group_id"
-        text = f"API 返回错误\n{detail.strip()}"[:4_000]
-        response = await self._call(
-            connection,
-            action,
-            {
-                target_key: int(match.group("target_id")),
-                "message": [{"type": "text", "data": {"text": text}}],
-            },
-        )
-        data = response.get("data")
-        message_id = data.get("message_id") if isinstance(data, dict) else None
-        if message_id is None:
-            LOGGER.warning("API 错误通知已发送，但 OneBot 未返回 message_id，无法自动撤回")
-            return
-        task = asyncio.create_task(
-            self._recall_api_error_notice(conversation_id, str(message_id)),
-            name=f"onebot-api-error-recall:{message_id}",
-        )
-        self.event_tasks.add(task)
-        task.add_done_callback(self.event_tasks.discard)
+        footer = "（此消息在60秒后自动撤回）"
+        parts = ChatRuntime._split_outbound_text(text, 4_000 - len(footer))
+        for part in parts:
+            response = await self._call(
+                connection,
+                action,
+                {
+                    target_key: int(match.group("target_id")),
+                    "message": [
+                        {"type": "text", "data": {"text": f"{part}{footer}"}}
+                    ],
+                },
+            )
+            data = response.get("data")
+            message_id = data.get("message_id") if isinstance(data, dict) else None
+            if message_id is None:
+                LOGGER.warning("API 通知已发送，但 OneBot 未返回 message_id，无法自动撤回")
+                continue
+            task = asyncio.create_task(
+                self._recall_api_error_notice(conversation_id, str(message_id)),
+                name=f"onebot-api-error-recall:{message_id}",
+            )
+            self.event_tasks.add(task)
+            task.add_done_callback(self.event_tasks.discard)
+
+    @staticmethod
+    def _format_model_error(error: ModelClientError) -> str:
+        parts = [f"错误类型：{type(error).__name__}"]
+        if isinstance(error, ModelHTTPError):
+            parts.append(f"HTTP 状态：{error.status_code}")
+        parts.append(f"错误消息：{str(error).strip() or '（空）'}")
+        if isinstance(error, ModelHTTPError) and error.body.strip():
+            parts.extend(("响应正文：", error.body.strip()))
+        return "\n".join(parts)
 
     async def _recall_api_error_notice(self, conversation_id: str, message_id: str) -> None:
         await asyncio.sleep(API_ERROR_RECALL_SECONDS)

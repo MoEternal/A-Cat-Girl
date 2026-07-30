@@ -1,6 +1,6 @@
 [project]
 name = "catgirl"
-version = "1.0.0"
+version = "1.0.1"
 description = "QQ AI configuration manager for NapCat"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

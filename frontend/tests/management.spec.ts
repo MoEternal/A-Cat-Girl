@@ -222,6 +222,54 @@ test('first run creates an administrator account before opening the console', as
   await expect(page.locator('.admin-session')).toHaveText('管理员')
 })
 
+test('live logs keep a manual scroll position while new entries arrive', async ({ page }) => {
+  const initialLogs = Array.from({ length: 80 }, (_, index) => ({
+    id: index + 1,
+    created_at: `2026-07-30T12:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}Z`,
+    level: 'INFO',
+    source: 'catgirl.test',
+    message: `历史日志 ${index + 1} ${'内容 '.repeat(12)}`,
+  }))
+  let incrementalRequests = 0
+  await page.route('**/api/overview', async (route) => {
+    await route.fulfill({
+      json: {
+        counts: { presets: 0, world_books: 0, providers: 0, templates: 0, characters: 0, user_personas: 0 },
+        active_preset: null,
+        active_provider: null,
+        active_template: null,
+        active_character: null,
+        active_user_persona: null,
+        active_world_book_ids: [],
+      },
+    })
+  })
+  await page.route('**/api/logs*', async (route) => {
+    const afterId = Number(new URL(route.request().url()).searchParams.get('after_id') ?? 0)
+    if (afterId === 0) {
+      await route.fulfill({ json: initialLogs })
+      return
+    }
+    incrementalRequests += 1
+    await route.fulfill({
+      json: incrementalRequests === 1
+        ? [{ id: 81, created_at: '2026-07-30T12:02:00Z', level: 'INFO', source: 'catgirl.test', message: '最新日志' }]
+        : [],
+    })
+  })
+
+  await page.goto('/')
+  const viewport = page.getByLabel('运行日志')
+  await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  await viewport.evaluate((element) => {
+    element.scrollTop = 0
+    element.dispatchEvent(new Event('scroll'))
+  })
+  await expect.poll(() => incrementalRequests).toBeGreaterThan(0)
+  await expect(page.getByText('最新日志', { exact: true })).toBeAttached()
+  await expect.poll(() => viewport.evaluate((element) => Math.round(element.scrollTop))).toBe(0)
+})
+
 test('desktop management pages render and remain usable', async ({ page, request }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.addInitScript(() => {
@@ -731,7 +779,7 @@ test('chat history multi-select deletes only the selected messages', async ({ pa
   }
   let messages = [
     { id: 'message-1', conversation_id: record.id, position: 0, role: 'user', content: '第一条', status: 'complete', source: 'user', provider_id: null, preset_id: null, model: '', prompt_tokens: null, completion_tokens: null, total_tokens: null, token_count: 400, speaker_name: '墨墨', message_metadata: {}, created_at: '2026-07-29T05:00:00Z' },
-    { id: 'message-2', conversation_id: record.id, position: 1, role: 'assistant', content: '第二条', status: 'complete', source: 'runtime', provider_id: null, preset_id: null, model: 'test-model', prompt_tokens: 8, completion_tokens: 3, total_tokens: 11, token_count: 400, speaker_name: '欢欢', message_metadata: {}, created_at: '2026-07-29T05:01:00Z' },
+    { id: 'message-2', conversation_id: record.id, position: 1, role: 'assistant', content: '第二条', status: 'complete', source: 'runtime', provider_id: null, preset_id: null, model: 'test-model', prompt_tokens: 8, completion_tokens: 3, total_tokens: 11, token_count: 400, speaker_name: '欢欢', message_metadata: { reasoning: '先分析用户的问题，再组织回答。' }, created_at: '2026-07-29T05:01:00Z' },
     { id: 'message-3', conversation_id: record.id, position: 2, role: 'user', content: '第三条', status: 'complete', source: 'user', provider_id: null, preset_id: null, model: '', prompt_tokens: null, completion_tokens: null, total_tokens: null, token_count: 434, speaker_name: '墨墨', message_metadata: {}, created_at: '2026-07-29T05:02:00Z' },
   ]
   let deletedIds: string[] = []
@@ -758,6 +806,12 @@ test('chat history multi-select deletes only the selected messages', async ({ pa
   await page.goto('/#/chat-history')
   await expect(page.locator('.history-route-select option')).toHaveText('私聊 · 欢欢')
   await expect(page.getByText('3 条消息 · 总 1,234 tokens')).toBeVisible()
+  const reasoning = page.locator('.history-reasoning')
+  await expect(reasoning).toHaveCount(1)
+  await expect(reasoning.locator('pre')).not.toBeVisible()
+  await reasoning.locator('summary').click()
+  await expect(reasoning.locator('pre')).toHaveText('先分析用户的问题，再组织回答。')
+  await expect(reasoning.locator('pre')).toBeVisible()
   await page.getByRole('button', { name: '多选' }).click()
   await expect(page.locator('.history-message-checkbox')).toHaveCount(3)
   await page.getByLabel('选择第 1 条消息').check()
@@ -770,9 +824,14 @@ test('chat history multi-select deletes only the selected messages', async ({ pa
   await expect(page.getByText('已删除 2 条聊天消息')).toBeVisible()
   await expect(page.getByRole('button', { name: '多选' })).toBeVisible()
   await expectNoHorizontalOverflow(page)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(reasoning.locator('pre')).toBeVisible()
+  await expectNoHorizontalOverflow(page)
+  await page.screenshot({ path: 'test-results/chat-history-reasoning-mobile.png', fullPage: true })
 })
 
 test('chat history shows historical card names, floor controls, and local message editing', async ({ page }) => {
+  await page.addInitScript(() => localStorage.removeItem('catgirl.chat-history.floor-limit.v1'))
   const route = 'qq:90001:private:234567'
   const record = {
     id: 'record-floor-tools',
@@ -780,19 +839,19 @@ test('chat history shows historical card names, floor controls, and local messag
     external_id: route,
     title: '长聊天记录',
     is_active: true,
-    message_count: 18,
-    total_tokens: 1800,
+    message_count: 129,
+    total_tokens: 12900,
     character_name: '欢欢',
-    last_message_preview: '第十八层内容',
+    last_message_preview: '第一百二十九层内容',
     created_at: '2026-07-29T06:00:00Z',
     updated_at: '2026-07-29T06:18:00Z',
   }
-  const messages = Array.from({ length: 18 }, (_, index) => ({
+  const messages = Array.from({ length: 129 }, (_, index) => ({
     id: `floor-message-${index + 1}`,
     conversation_id: record.id,
     position: index,
     role: index % 2 === 0 ? 'user' : 'assistant',
-    content: `第${index + 1}层内容 `.repeat(3),
+    content: `第${index + 1}层内容 `.repeat(index === 9 ? 80 : 3),
     status: 'complete',
     source: index % 2 === 0 ? 'user' : 'runtime',
     provider_id: null,
@@ -804,7 +863,7 @@ test('chat history shows historical card names, floor controls, and local messag
     token_count: 100,
     speaker_name: index % 2 === 0 ? '当时的用户卡' : '当时的角色卡',
     message_metadata: {},
-    created_at: `2026-07-29T06:${String(index).padStart(2, '0')}:00Z`,
+    created_at: new Date(Date.UTC(2026, 6, 29, 6, 0, index)).toISOString(),
   }))
   let editedRequest: { messageId: string, content: string } | null = null
 
@@ -824,10 +883,15 @@ test('chat history shows historical card names, floor controls, and local messag
   await page.setViewportSize({ width: 1440, height: 760 })
   await page.goto('/#/chat-history')
   const history = page.locator('.history-message-list')
-  await expect(page.locator('.history-message').first().getByText('当时的用户卡')).toBeVisible()
-  await expect(page.locator('.history-message').nth(1).getByText('当时的角色卡')).toBeVisible()
-  await expect(page.getByText('第 1 层', { exact: true })).toBeVisible()
-  await expect(page.getByText('第 18 层', { exact: true })).not.toBeInViewport()
+  const floorLimit = page.getByLabel('显示楼层')
+  await expect(floorLimit).toHaveValue('100')
+  await expect(page.locator('.history-message')).toHaveCount(100)
+  await expect(page.locator('.history-message').first().getByText('当时的角色卡')).toBeVisible()
+  await expect(page.locator('.history-message').nth(1).getByText('当时的用户卡')).toBeVisible()
+  await expect(page.getByText('第 29 层', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('第 30 层', { exact: true })).toBeAttached()
+  await expect(page.getByText('第 129 层', { exact: true })).toBeInViewport()
+  await expect.poll(() => history.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
   const scrollTopButton = page.getByTitle('滚动到最上方')
   const scrollBottomButton = page.getByTitle('滚动到最下方')
   const [historyBox, scrollTopButtonBox, scrollBottomButtonBox] = await Promise.all([
@@ -840,14 +904,28 @@ test('chat history shows historical card names, floor controls, and local messag
   expect(scrollBottomButtonBox).not.toBeNull()
   expect(Math.abs((historyBox!.x + historyBox!.width - 10) - (scrollTopButtonBox!.x + scrollTopButtonBox!.width))).toBeLessThan(1)
   expect(scrollBottomButtonBox!.x).toBe(scrollTopButtonBox!.x)
+  await scrollTopButton.click()
+  await expect.poll(() => history.evaluate((element) => Math.round(element.scrollTop))).toBe(0)
+  await expect(page.getByText('第 30 层', { exact: true })).toBeInViewport()
   await scrollBottomButton.click()
   await expect.poll(() => history.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
-  await expect(page.getByText('第 18 层', { exact: true })).toBeInViewport()
+  await expect(page.getByText('第 129 层', { exact: true })).toBeInViewport()
+
+  await floorLimit.fill('0')
+  await floorLimit.blur()
+  await expect(page.locator('.history-message')).toHaveCount(129)
+  await expect(page.getByText('第 1 层', { exact: true })).toBeAttached()
+  await expect(page.getByText('第 129 层', { exact: true })).toBeInViewport()
   await scrollTopButton.click()
   await expect.poll(() => history.evaluate((element) => Math.round(element.scrollTop))).toBe(0)
 
-  await page.getByTitle('编辑第 10 层').click()
-  await page.getByLabel('编辑第 10 层文本').fill('第十层已在本地修改')
+  const floorTen = page.locator('.history-message').filter({ has: page.getByText('第 10 层', { exact: true }) })
+  const originalFloorHeight = await floorTen.evaluate((element) => element.getBoundingClientRect().height)
+  await floorTen.getByTitle('编辑第 10 层').click()
+  const editor = floorTen.getByLabel('编辑第 10 层文本')
+  await expect.poll(() => floorTen.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(originalFloorHeight)
+  await expect.poll(() => editor.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(originalFloorHeight / 2)
+  await editor.fill('第十层已在本地修改')
   await page.getByTitle('保存本层').click()
   await expect.poll(() => editedRequest).toEqual({
     messageId: 'floor-message-10',
@@ -857,6 +935,9 @@ test('chat history shows historical card names, floor controls, and local messag
   await expect(page.getByText('第 10 层已保存', { exact: true })).toBeVisible()
   await expectNoHorizontalOverflow(page)
   await page.screenshot({ path: 'test-results/chat-history-floor-tools.png', fullPage: true })
+  await floorLimit.fill('5')
+  await floorLimit.blur()
+  await expect(page.locator('.history-message')).toHaveCount(5)
   await page.setViewportSize({ width: 390, height: 844 })
   await expectNoHorizontalOverflow(page)
   await page.screenshot({ path: 'test-results/chat-history-floor-tools-mobile.png', fullPage: true })

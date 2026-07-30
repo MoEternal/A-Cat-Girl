@@ -694,6 +694,107 @@ def test_qq_regex_filters_preserve_console_history_and_skip_empty_text(tmp_path:
         assert skipped == {"status": "ok", "retcode": 0, "data": {"skipped": True}}
 
 
+def test_provider_failover_notices_each_failed_hop_and_recalls_them(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("catgirl.onebot.API_ERROR_RECALL_SECONDS", 0.01)
+    attempted_models: list[str] = []
+
+    async def model_handler(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        attempted_models.append(model)
+        if model == "third-model":
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"content": "第三接口成功"}, "finish_reason": "stop"}
+                    ]
+                },
+            )
+        return httpx.Response(503, json={"error": {"message": f"{model} unavailable"}})
+
+    with make_client(tmp_path) as client:
+        configure_model(client)
+        client.post(
+            "/api/providers",
+            json={
+                "name": "新接口3",
+                "base_url": "https://third.test/v1",
+                "model": "third-model",
+                "priority": 30,
+            },
+        )
+        client.post(
+            "/api/providers",
+            json={
+                "name": "新接口2",
+                "base_url": "https://second.test/v1",
+                "model": "second-model",
+                "priority": 20,
+            },
+        )
+        client.app.state.chat_runtime.model_client = OpenAICompatibleClient(
+            transport=httpx.MockTransport(model_handler)
+        )
+        client.put(
+            "/api/onebot/config",
+            json={"enabled": True, "access_token": "failover-token", "private_messages": True},
+        )
+
+        with client.websocket_connect(
+            "/onebot/v11/ws",
+            headers={"Authorization": "Bearer failover-token", "X-Self-ID": "90001"},
+        ) as websocket:
+            websocket.send_json(private_event(1049, "触发故障转移"))
+            expected_notices = {
+                "API配置·默认接口 调用失败，故障转移至 API配置·新接口2（此消息在60秒后自动撤回）": 5041,
+                "API配置·新接口2 调用失败，故障转移至 API配置·新接口3（此消息在60秒后自动撤回）": 5042,
+            }
+            sent_notice_ids: set[int] = set()
+            recalled_notice_ids: set[int] = set()
+            reply_seen = False
+            while not reply_seen or recalled_notice_ids != sent_notice_ids or len(sent_notice_ids) < 2:
+                request = websocket.receive_json()
+                if request["action"] == "send_private_msg":
+                    text = request["params"]["message"][0]["data"]["text"]
+                    if text in expected_notices:
+                        message_id = expected_notices[text]
+                        sent_notice_ids.add(message_id)
+                    else:
+                        assert text == "第三接口成功"
+                        message_id = 5043
+                        reply_seen = True
+                    websocket.send_json(
+                        {
+                            "status": "ok",
+                            "retcode": 0,
+                            "data": {"message_id": message_id},
+                            "echo": request["echo"],
+                        }
+                    )
+                elif request["action"] == "delete_msg":
+                    recalled_notice_ids.add(request["params"]["message_id"])
+                    websocket.send_json(
+                        {"status": "ok", "retcode": 0, "data": {}, "echo": request["echo"]}
+                    )
+                else:
+                    pytest.fail(f"unexpected OneBot action: {request['action']}")
+
+            assert sent_notice_ids == {5041, 5042}
+            assert recalled_notice_ids == sent_notice_ids
+
+        assert attempted_models == ["qq-model", "second-model", "third-model"]
+        messages = client.get(
+            "/api/runtime/conversations/qq:90001:private:12345/messages"
+        ).json()
+        assert [(item["role"], item["content"]) for item in messages] == [
+            ("user", "触发故障转移"),
+            ("assistant", "第三接口成功"),
+        ]
+
+
 def test_model_api_error_is_sent_then_recalled_without_entering_history(
     tmp_path: Path,
     monkeypatch,
@@ -731,30 +832,58 @@ def test_model_api_error_is_sent_then_recalled_without_entering_history(
             headers={"Authorization": "Bearer error-token", "X-Self-ID": "90001"},
         ) as websocket:
             websocket.send_json(private_event(1050, "触发中转站错误"))
-            notice = websocket.receive_json()
-            assert notice["action"] == "send_private_msg"
-            assert notice["params"]["message"] == [
+            failover_notice = websocket.receive_json()
+            assert failover_notice["action"] == "send_private_msg"
+            assert failover_notice["params"]["message"] == [
                 {
                     "type": "text",
-                    "data": {"text": "API 返回错误\nlast relay quota exhausted"},
+                    "data": {
+                        "text": (
+                            "API配置·默认接口 调用失败，故障转移至 "
+                            "API配置·最后备用接口（此消息在60秒后自动撤回）"
+                        )
+                    },
                 }
             ]
             websocket.send_json(
                 {
                     "status": "ok",
                     "retcode": 0,
-                    "data": {"message_id": 5050},
-                    "echo": notice["echo"],
+                    "data": {"message_id": 5049},
+                    "echo": failover_notice["echo"],
                 }
             )
 
-            deletion = websocket.receive_json()
-            assert deletion["action"] == "delete_msg"
-            assert deletion["params"] == {"message_id": 5050}
-            websocket.send_json(
-                {"status": "ok", "retcode": 0, "data": {}, "echo": deletion["echo"]}
+            error_notice = websocket.receive_json()
+            assert error_notice["action"] == "send_private_msg"
+            error_text = error_notice["params"]["message"][0]["data"]["text"]
+            assert error_text == (
+                "API配置·最后备用接口 调用失败，所有 API 配置均不可用。\n"
+                "完整报错：\n"
+                "错误类型：ModelHTTPError\n"
+                "HTTP 状态：429\n"
+                "错误消息：last relay quota exhausted\n"
+                "响应正文：\n"
+                f"{json.dumps(last_error, ensure_ascii=False, separators=(',', ':'))}"
+                "（此消息在60秒后自动撤回）"
             )
-            client.portal.call(asyncio.sleep, 0.02)
+            websocket.send_json(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {"message_id": 5050},
+                    "echo": error_notice["echo"],
+                }
+            )
+
+            deleted_ids = set()
+            while deleted_ids != {5049, 5050}:
+                deletion = websocket.receive_json()
+                assert deletion["action"] == "delete_msg"
+                deleted_ids.add(deletion["params"]["message_id"])
+                websocket.send_json(
+                    {"status": "ok", "retcode": 0, "data": {}, "echo": deletion["echo"]}
+                )
 
             with client.app.state.database.session_factory() as session:
                 event = session.get(OneBotEvent, "message:90001:1050")

@@ -72,15 +72,6 @@ New-Item -ItemType Directory -Force -Path $deployTarget | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot 'deploy\linux') -Destination $deployTarget -Recurse
 Copy-Item -LiteralPath (Join-Path $projectRoot 'deploy\linux\start.sh') -Destination $stagingDir
 Copy-Item -LiteralPath (Join-Path $projectRoot 'deploy\linux\README-LINUX.txt') -Destination $stagingDir
-$updaterBatch = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'deploy\linux') -File -Filter '*.bat'
-$updaterShell = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'deploy\linux') -File -Filter '*.sh' | Where-Object {
-    $_.Name -notin @('start.sh', 'update-package.sh')
-}
-if (@($updaterBatch).Count -ne 1 -or @($updaterShell).Count -ne 1) {
-    throw 'Expected exactly one Linux updater batch and shell entry.'
-}
-Copy-Item -LiteralPath $updaterBatch.FullName -Destination $stagingDir
-Copy-Item -LiteralPath $updaterShell.FullName -Destination $stagingDir
 Set-Content -LiteralPath (Join-Path $stagingDir 'VERSION.txt') -Value $version -Encoding ASCII
 foreach ($file in @('pyproject.toml', 'uv.lock', 'README.md', '.env.example', 'THIRD_PARTY_NOTICES.md')) {
     if (-not (Test-Path -LiteralPath (Join-Path $projectRoot $file))) { continue }

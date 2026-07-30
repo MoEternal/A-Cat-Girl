@@ -63,7 +63,7 @@ New-Item -ItemType Directory -Force -Path $deployTarget | Out-Null
 $windowsDeployTarget = Join-Path $deployTarget 'windows'
 New-Item -ItemType Directory -Force -Path $windowsDeployTarget | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $projectRoot 'deploy\windows') -File | Where-Object {
-    $_.Name -like 'server-*.ps1' -or $_.Name -eq 'update-package.ps1' -or $_.Extension -eq '.cmd' -or $_.Name -eq 'WEB-SERVER-README.txt'
+    $_.Name -like 'server-*.ps1' -or $_.Extension -eq '.cmd' -or $_.Name -eq 'WEB-SERVER-README.txt'
 } | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $windowsDeployTarget
 }
@@ -77,9 +77,6 @@ $launchEntry = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'deploy\window
 if (@($launchEntry).Count -ne 1) { throw 'Expected exactly one Windows server launch entry.' }
 Copy-Item -LiteralPath $launchEntry.FullName -Destination $stagingDir
 Copy-Item -LiteralPath (Join-Path $projectRoot 'deploy\windows\WEB-SERVER-README.txt') -Destination $stagingDir
-$updaterEntry = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'deploy\windows') -File -Filter '*.bat'
-if (@($updaterEntry).Count -ne 1) { throw 'Expected exactly one Windows updater batch entry.' }
-Copy-Item -LiteralPath $updaterEntry.FullName -Destination $stagingDir
 Set-Content -LiteralPath (Join-Path $stagingDir 'VERSION.txt') -Value $version -Encoding ASCII
 
 New-Item -ItemType Directory -Force -Path (Join-Path $stagingDir 'data'), (Join-Path $stagingDir 'logs'), (Join-Path $stagingDir 'backups') | Out-Null

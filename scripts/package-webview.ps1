@@ -90,12 +90,6 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $stagin
 if (Test-Path -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md')) {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $stagingDir
 }
-$updaterTarget = Join-Path $stagingDir 'deploy\windows'
-New-Item -ItemType Directory -Force -Path $updaterTarget | Out-Null
-Copy-Item -LiteralPath (Join-Path $projectRoot 'deploy\windows\update-package.ps1') -Destination $updaterTarget
-$updaterEntry = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'deploy\windows') -File -Filter '*.bat'
-if (@($updaterEntry).Count -ne 1) { throw 'Expected exactly one Windows updater batch entry.' }
-Copy-Item -LiteralPath $updaterEntry.FullName -Destination $stagingDir
 Set-Content -LiteralPath (Join-Path $stagingDir 'VERSION.txt') -Value $version -Encoding ASCII
 
 if (-not $SkipWebView2Download) {

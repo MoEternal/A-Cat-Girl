@@ -74,7 +74,7 @@
 - 管理界面已参考本地 LLM 用量统计页的视觉语言改为深色暖金控制台主题：低对比网点背景、深色半透明面板、细描边和暖金主操作色，同时保留蓝/绿/红状态色；侧栏品牌显示为“一只猫娘 / 管理控制台”。
 - 控制台右下角提供七段主题色滑块，默认橙色，切换红/橙/金/绿/青/蓝/紫后保存到浏览器本地存储并在刷新后恢复。浏览器 favicon 直接使用用户提供的白底黑边猫娘图片。
 - 配置总览的日志消息框会在用户停留底部时继续自动跟随新日志；用户手动向上滚动后保持当前位置，不再被轮询强制拉回底部。
-- Windows 桌面版、Windows 网页版和 Linux 网页版发行包根目录均提供 `一键更新.bat`；Linux 同时提供 `一键更新.sh`。更新器从 GitHub Releases 获取对应完整包并校验 `SHA256SUMS.txt`，覆盖程序文件时保留 `data`、`logs`、`backups`、`.env` 和 `.venv`。
+- 发行包不提供自动更新入口，版本文件和用户数据由用户自行管理。
 
 ## 当前端口
 
@@ -99,7 +99,7 @@
 - `request_generation` 已会调用模型；`send_text`、`send_image` 在 OneBot 在线时可执行，离线时保持 `pending`。
 - 管理界面已有单管理员登录鉴权，但正式公网部署仍需可信反向代理、TLS 和访问来源限制。
 - 尚未加入 Alembic 正式迁移、导出文件的一键恢复导入、整库备份恢复和 Windows 服务安装；当前已有受控启动迁移、SillyTavern 导入和项目 JSON 导出。
-- 三种预构建发布包的一键更新已实现；Windows 服务安装、更新后健康检查和失败自动回退仍待服务器交付阶段实现，详见 `docs/WINDOWS_DEPLOYMENT.md`。
+- Windows 服务安装、健康检查和失败自动回退仍待服务器交付阶段实现，详见 `docs/WINDOWS_DEPLOYMENT.md`。
 - 仅按用户明确指定，只读检查了旧 `VirtualCompanion` 的主动回复、晚安和表情回复实现并迁移对应行为与表情资源；没有迁移历史、密钥或旧全局架构。
 
 ## 验证结果
@@ -109,7 +109,7 @@
 - `npx playwright test`：15 个桌面/手机浏览器测试通过，包含聊天记录原生思考折叠块、默认最新 100 层、编辑框高度、日志滚动保持，以及系统文件夹导出、世界书、角色卡、正则、提示词和记忆网络。
 - `scripts/bootstrap.ps1`：在 Windows PowerShell 下完整重建成功。
 - `scripts/package-server.ps1`：已生成不含数据库、密钥、`.env`、`.venv` 和 Node.js 依赖的 Windows 测试发布 ZIP；发布包在独立目录下载 Python 3.12、按 `uv.lock` 重建环境后，于临时端口通过 `/health` 实际启动验证。
-- `scripts/package-public.ps1`：已生成并校验 `v1.0.1` 的 Windows 桌面版、Windows 网页版和 Linux 网页版完整包，三个包根目录均包含一键更新入口和 `VERSION.txt`。
+- `scripts/package-public.ps1`：已生成并校验 `v1.0.1` 的 Windows 桌面版、Windows 网页版和 Linux 网页版完整包，三个包根目录均包含 `VERSION.txt`，不包含自动更新脚本。
 
 ## 下一批建议
 

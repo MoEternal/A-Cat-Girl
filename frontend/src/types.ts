@@ -222,6 +222,7 @@ export interface PluginSettingDefinition {
   default?: unknown
   minimum?: number
   maximum?: number
+  maxLength?: number
   enum?: Array<string | number>
   enum_names?: string[]
   format?: string
@@ -294,6 +295,12 @@ export interface RegexFilterState {
   character_rules: Record<string, RegexRule[]>
 }
 
+export interface GroupChatManagementState {
+  version: number
+  global_words: string[]
+  groups: Record<string, { blocked_words: string[] }>
+}
+
 export interface PluginStateResponse<T = Record<string, unknown>> {
   state: T
 }
@@ -340,6 +347,15 @@ export interface ConversationRecord {
   last_message_preview: string
   created_at: string
   updated_at: string
+}
+
+export interface SillyTavernChatImportReport {
+  conversation: ConversationRecord
+  imported_messages: number
+  skipped_messages: number
+  user_name: string
+  character_name: string
+  warnings: string[]
 }
 
 export interface ChatMessage {

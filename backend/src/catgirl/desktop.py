@@ -98,6 +98,7 @@ class DesktopServer:
     def __init__(self) -> None:
         settings = get_settings()
         self.url = f"http://127.0.0.1:{settings.port}"
+        self.frontend_url = f"{self.url}/?startup={time.time_ns()}"
         self.server = uvicorn.Server(
             uvicorn.Config(
                 create_app(),
@@ -149,7 +150,7 @@ def main() -> int:
         runtime.start()
         window = webview.create_window(
             "一只猫娘",
-            runtime.url,
+            runtime.frontend_url,
             width=1440,
             height=900,
             min_size=(960, 640),

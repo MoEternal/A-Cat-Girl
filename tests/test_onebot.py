@@ -72,8 +72,14 @@ def friend_recall_event(message_id: int, user_id: int = 12345) -> dict:
     }
 
 
-def group_event(message_id: int, text: str = "群消息") -> dict:
-    return {
+def group_event(
+    message_id: int,
+    text: str = "群消息",
+    *,
+    sender_role: str = "member",
+    message: list[dict] | None = None,
+) -> dict:
+    event = {
         "time": 1784900000,
         "self_id": 90001,
         "post_type": "message",
@@ -83,7 +89,11 @@ def group_event(message_id: int, text: str = "群消息") -> dict:
         "group_id": 7788,
         "user_id": 12345,
         "raw_message": text,
+        "sender": {"user_id": 12345, "role": sender_role},
     }
+    if message is not None:
+        event["message"] = message
+    return event
 
 
 def group_recall_event(message_id: int) -> dict:
@@ -418,6 +428,119 @@ def test_private_message_runs_model_and_sends_onebot_action_once(tmp_path: Path)
         assert client.get("/api/onebot/status").json()["connected"] is False
 
 
+def test_group_management_requires_real_at_and_prefix_then_censors_input(tmp_path: Path) -> None:
+    model_calls = 0
+
+    async def model_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal model_calls
+        model_calls += 1
+        payload = json.loads(request.content)
+        assert payload["messages"][-1] == {"role": "user", "content": "包含**的消息"}
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "群聊回复"}, "finish_reason": "stop"}]},
+        )
+
+    with make_client(tmp_path) as client:
+        configure_model(client)
+        configured = client.put(
+            "/api/plugins/group_chat_management",
+            json={
+                "enabled": True,
+                "settings": {
+                    "wake_prefix": "/",
+                    "require_mention": True,
+                    "censor_replacement": "*",
+                },
+            },
+        )
+        assert configured.status_code == 200, configured.text
+        client.app.state.chat_runtime.model_client = OpenAICompatibleClient(
+            transport=httpx.MockTransport(model_handler)
+        )
+        client.put(
+            "/api/onebot/config",
+            json={"enabled": True, "access_token": "group-token", "group_messages": True},
+        )
+
+        with client.websocket_connect(
+            "/onebot/v11/ws",
+            headers={"Authorization": "Bearer group-token", "X-Self-ID": "90001"},
+        ) as websocket:
+            websocket.send_json(
+                group_event(5101, "/添加屏蔽词 秘密", sender_role="admin")
+            )
+            command_reply = websocket.receive_json()
+            assert command_reply["action"] == "send_group_msg"
+            assert command_reply["params"]["message"] == [
+                {"type": "text", "data": {"text": "已添加屏蔽词“秘密”。"}}
+            ]
+            websocket.send_json(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {"message_id": 6101},
+                    "echo": command_reply["echo"],
+                }
+            )
+            client.portal.call(client.app.state.action_executor.queue.join)
+
+            # A plain @ character does not satisfy the real OneBot at requirement.
+            websocket.send_json(group_event(5102, "/普通@机器人 包含秘密的消息"))
+            # A real at without the configured wake prefix also remains silent.
+            websocket.send_json(
+                group_event(
+                    5103,
+                    "[CQ:at,qq=90001] 包含秘密的消息",
+                    message=[
+                        {"type": "at", "data": {"qq": "90001"}},
+                        {"type": "text", "data": {"text": " 包含秘密的消息"}},
+                    ],
+                )
+            )
+            client.portal.call(asyncio.sleep, 0.1)
+            assert model_calls == 0
+            assert client.get("/api/runtime/conversations").json() == []
+
+            websocket.send_json(
+                group_event(
+                    5104,
+                    "[CQ:at,qq=90001] /包含秘密的消息",
+                    message=[
+                        {"type": "at", "data": {"qq": 90001}},
+                        {"type": "text", "data": {"text": " /包含秘密的消息"}},
+                    ],
+                )
+            )
+            reply = websocket.receive_json()
+            assert reply["action"] == "send_group_msg"
+            assert reply["params"]["group_id"] == 7788
+            assert reply["params"]["message"] == [
+                {"type": "text", "data": {"text": "群聊回复"}}
+            ]
+            websocket.send_json(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {"message_id": 6104},
+                    "echo": reply["echo"],
+                }
+            )
+            client.portal.call(client.app.state.action_executor.queue.join)
+
+        assert model_calls == 1
+        records = client.get("/api/runtime/conversations").json()
+        assert len(records) == 1
+        messages = client.get(
+            f"/api/runtime/conversations/{records[0]['id']}/messages"
+        ).json()
+        assert [(item["role"], item["content"]) for item in messages] == [
+            ("user", "包含**的消息"),
+            ("assistant", "群聊回复"),
+        ]
+        assert "秘密" not in str(messages)
+
+
 def test_reply_merge_batches_rapid_messages_and_second_id_can_recall_turn(
     tmp_path: Path,
 ) -> None:
@@ -584,6 +707,91 @@ def test_recall_during_reply_merge_wait_removes_pending_message(tmp_path: Path) 
             assert inbound is not None and inbound.status == "recalled"
             assert recall is not None and recall.status == "completed"
             assert turn is None
+
+
+def test_recall_overtaking_message_preprocessing_blocks_old_turn_and_allows_resend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_calls = 0
+
+    async def model_handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal model_calls
+        model_calls += 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": f"第{model_calls}次回复"}}]},
+        )
+
+    with make_client(tmp_path) as client:
+        configure_model(client)
+        client.put(
+            "/api/plugins/reply_merge",
+            json={"enabled": True, "settings": {"message_batch_delay": 0.03}},
+        )
+        manager = client.app.state.plugin_manager
+        original_dispatch = manager.dispatch
+
+        async def delayed_dispatch(hook_name, event):
+            if hook_name == "before_qq_message" and event.text == "撤回后重发":
+                await asyncio.sleep(0.08)
+            return await original_dispatch(hook_name, event)
+
+        monkeypatch.setattr(manager, "dispatch", delayed_dispatch)
+        client.app.state.chat_runtime.model_client = OpenAICompatibleClient(
+            transport=httpx.MockTransport(model_handler)
+        )
+        client.put(
+            "/api/onebot/config",
+            json={"enabled": True, "access_token": "early-recall", "private_messages": True},
+        )
+        with client.websocket_connect(
+            "/onebot/v11/ws",
+            headers={"Authorization": "Bearer early-recall", "X-Self-ID": "90001"},
+        ) as websocket:
+            websocket.send_json(private_event(4251, "撤回后重发"))
+            client.portal.call(asyncio.sleep, 0.01)
+            websocket.send_json(friend_recall_event(4251))
+            client.portal.call(asyncio.sleep, 0.15)
+
+            assert model_calls == 0
+            with client.app.state.database.session_factory() as session:
+                inbound = session.get(OneBotEvent, "message:90001:4251")
+                recall = session.get(OneBotEvent, "notice:friend_recall:90001:4251")
+                old_turn = session.scalar(
+                    select(ConversationTurn).where(
+                        ConversationTurn.trigger_message_id == "4251"
+                    )
+                )
+                assert inbound is not None and inbound.status == "recalled"
+                assert recall is not None and recall.status == "completed"
+                assert old_turn is None
+
+            websocket.send_json(private_event(4252, "撤回后重发"))
+            request = websocket.receive_json()
+            assert request["action"] == "send_private_msg"
+            assert request["params"]["message"] == [
+                {"type": "text", "data": {"text": "第1次回复"}}
+            ]
+            websocket.send_json(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {"message_id": 5252},
+                    "echo": request["echo"],
+                }
+            )
+            client.portal.call(client.app.state.action_executor.queue.join)
+
+        records = client.get("/api/runtime/conversations").json()
+        assert len(records) == 1
+        messages = client.get(
+            f"/api/runtime/conversations/{records[0]['id']}/messages"
+        ).json()
+        assert [(item["role"], item["content"]) for item in messages] == [
+            ("user", "撤回后重发"),
+            ("assistant", "第1次回复"),
+        ]
 
 
 def test_qq_regex_filters_preserve_console_history_and_skip_empty_text(tmp_path: Path) -> None:

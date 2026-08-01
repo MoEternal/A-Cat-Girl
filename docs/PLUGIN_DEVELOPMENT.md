@@ -71,6 +71,7 @@ plugin = MyPlugin()
 
 - `on_startup`：插件启用或重载后调用。
 - `on_shutdown`：插件停用、重载或服务关闭前调用。
+- `before_qq_message`：OneBot 消息进入回复合并、媒体下载和聊天历史前调用；可通过 `metadata.inbound_text` 替换安全正文，或返回 `consume=True` 静默丢弃。
 - `on_user_message`：收到规范化用户消息后调用。
 - `before_prompt_compile`：Prompt 编译前调用，可返回 `prompt_addition`。
 - `before_response_split`：完整模型回复进入分段处理前调用，可标记不应参与分段的分隔符位置。
@@ -97,6 +98,8 @@ plugin = MyPlugin()
 插件状态和动作只允许 JSON 值，单个字符串最大 100,000 字符，任何 `data:image/...;base64` 都会被拒绝。图片动作应传受控文件路径或媒体引用，不传 base64。
 
 `before_send` 的 `event.response_text` 是即将发给 QQ 的当前文本段，`event.metadata.character_id` 是生成该回复时使用的角色卡 ID。插件可在结果 `metadata.outbound_text` 中返回替换后的文本；返回空字符串会静默跳过该文本动作。此钩子位于 QQ 出口，不会改写模型原始回复、聊天历史或控制台内容。
+
+`before_qq_message` 只由 OneBot 入站调用。`event.metadata` 提供 `message_type`、`group_id`、`self_id`、`sender_role`、`mentioned_self` 和 `has_media`；其中 `mentioned_self` 只识别结构化 OneBot `at` 消息段或 CQ `at` 码，不把普通文本中的 `@` 当成提及。该钩子返回的 `metadata.inbound_text` 会成为后续插件、聊天历史与模型共同使用的正文。
 
 `before_response_split` 的 `event.response_text` 是尚未分段的完整模型回复，`event.metadata.delimiter` 是当前分隔符。内置正则插件会检查所有启用的全局与角色规则，并通过 `metadata.regex_filter.protected_delimiter_offsets` 标记规则匹配范围内的分隔符；分段回复会跳过这些位置。该钩子只提供边界信息，不会提前执行替换，正则仍只在 `before_send` 阶段处理一次。
 

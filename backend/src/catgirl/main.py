@@ -25,6 +25,16 @@ from .security import SecretBox
 LOGGER = logging.getLogger("catgirl.app")
 
 
+class FrontendStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
+
 def create_app(
     data_dir: Path | None = None,
     *,
@@ -86,7 +96,7 @@ def create_app(
 
     app = FastAPI(
         title="A CAT GIRL API",
-        version="1.0.1",
+        version="1.1.0",
         lifespan=lifespan,
     )
     app.state.database = database
@@ -121,7 +131,7 @@ def create_app(
 
     frontend_dist = settings.frontend_dist
     if frontend_dist.is_dir():
-        app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+        app.mount("/", FrontendStaticFiles(directory=frontend_dist, html=True), name="frontend")
     return app
 
 

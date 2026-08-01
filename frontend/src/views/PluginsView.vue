@@ -28,6 +28,8 @@ import { api, json } from '../api'
 import { exportEnvelope, exportJsonToFolder } from '../exportJson'
 import type {
   Character,
+  ConversationRecord,
+  GroupChatManagementState,
   Plugin,
   PluginConversationStateView,
   PluginSettingDefinition,
@@ -56,6 +58,13 @@ const regexScope = ref<'global' | 'character'>('global')
 const selectedRegexCharacterId = ref('')
 const regexLoading = ref(false)
 const regexError = ref('')
+const groupChatState = ref<GroupChatManagementState>({ version: 2, global_words: [], groups: {} })
+const groupChatConversations = ref<ConversationRecord[]>([])
+const groupChatScope = ref<'global' | 'group'>('global')
+const selectedGroupChatGroupId = ref('')
+const groupChatWordDraft = ref('')
+const groupChatLoading = ref(false)
+const groupChatError = ref('')
 const searchModelOptions = ref<Array<{ id: string, name: string }>>([])
 const searchModelsLoading = ref(false)
 const manualSearchModel = ref(true)
@@ -73,6 +82,24 @@ const regexRules = computed(() => {
   if (regexScope.value === 'global') return regexState.value.global_rules
   if (!selectedRegexCharacterId.value) return []
   return regexState.value.character_rules[selectedRegexCharacterId.value] ?? []
+})
+const groupChatOptions = computed(() => {
+  const options = new Map<string, string>()
+  for (const groupId of Object.keys(groupChatState.value.groups)) options.set(groupId, groupId)
+  for (const record of groupChatConversations.value) {
+    const groupId = groupIdFromConversation(record)
+    if (!groupId) continue
+    const title = record.title.trim()
+    options.set(groupId, title && title !== groupId ? `${title} · ${groupId}` : groupId)
+  }
+  return [...options.entries()]
+    .map(([id, label]) => ({ id, label }))
+    .sort((left, right) => left.id.localeCompare(right.id, 'zh-CN', { numeric: true }))
+})
+const groupChatWords = computed(() => {
+  if (groupChatScope.value === 'global') return groupChatState.value.global_words
+  if (!selectedGroupChatGroupId.value) return []
+  return groupChatState.value.groups[selectedGroupChatGroupId.value]?.blocked_words ?? []
 })
 const memoryCharacters = computed(() => recordList(memoryView.value.state.characters)
   .sort((left, right) => numberValue(right.last_turn) - numberValue(left.last_turn))
@@ -265,7 +292,12 @@ function selectPlugin(plugin: Plugin) {
   selectedId.value = plugin.id
   for (const key of Object.keys(form)) delete form[key]
   for (const [key, value] of Object.entries(plugin.settings)) {
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') form[key] = value
+    if (typeof value === 'string') {
+      const maxLength = plugin.settings_schema.properties[key]?.maxLength
+      form[key] = typeof maxLength === 'number' && Number.isInteger(maxLength)
+        ? [...value].slice(0, maxLength).join('')
+        : value
+    } else if (typeof value === 'number' || typeof value === 'boolean') form[key] = value
   }
   error.value = ''
   notice.value = ''
@@ -278,6 +310,8 @@ function selectPlugin(plugin: Plugin) {
   }
   if (plugin.id === 'regex_filter') void loadRegexEditor()
   else regexError.value = ''
+  if (plugin.id === 'group_chat_management') void loadGroupChatEditor()
+  else groupChatError.value = ''
 }
 
 watch(
@@ -436,6 +470,127 @@ async function saveRegexState() {
     notice.value = '正则脚本已保存'
   } catch (reason) {
     regexError.value = reason instanceof Error ? reason.message : '正则保存失败'
+  } finally {
+    saving.value = false
+  }
+}
+
+function normalizedBlockedWords(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const words: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const word = item.trim()
+    const key = word.toLocaleLowerCase()
+    if (!word || word.length > 120 || seen.has(key)) continue
+    words.push(word)
+    seen.add(key)
+    if (words.length >= 500) break
+  }
+  return words
+}
+
+function normalizeGroupChatState(value: unknown): GroupChatManagementState {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : {}
+  const groups: GroupChatManagementState['groups'] = {}
+  if (source.groups && typeof source.groups === 'object' && !Array.isArray(source.groups)) {
+    for (const [rawGroupId, entry] of Object.entries(source.groups)) {
+      const groupId = rawGroupId.trim()
+      if (!groupId || !entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+      const words = normalizedBlockedWords((entry as JsonRecord).blocked_words)
+      if (words.length) groups[groupId] = { blocked_words: words }
+    }
+  }
+  return {
+    version: 2,
+    global_words: normalizedBlockedWords(source.global_words),
+    groups,
+  }
+}
+
+function groupIdFromConversation(record: ConversationRecord): string {
+  for (const value of [record.id, record.external_id]) {
+    const match = value.match(/(?:^|:)group:([^:]+)$/)
+    if (match?.[1]) return match[1].trim()
+  }
+  return ''
+}
+
+function selectAvailableGroupChatGroup() {
+  if (groupChatOptions.value.some((item) => item.id === selectedGroupChatGroupId.value)) return
+  selectedGroupChatGroupId.value = groupChatOptions.value[0]?.id ?? ''
+}
+
+async function loadGroupChatEditor() {
+  if (selectedId.value !== 'group_chat_management') return
+  groupChatLoading.value = true
+  groupChatError.value = ''
+  try {
+    const [stateResponse, conversations] = await Promise.all([
+      api<PluginStateResponse<GroupChatManagementState>>('/api/plugins/group_chat_management/state'),
+      api<ConversationRecord[]>('/api/runtime/conversations'),
+    ])
+    if (selectedId.value !== 'group_chat_management') return
+    groupChatState.value = normalizeGroupChatState(stateResponse.state)
+    groupChatConversations.value = conversations
+    selectAvailableGroupChatGroup()
+  } catch (reason) {
+    groupChatError.value = reason instanceof Error ? reason.message : '屏蔽词加载失败'
+  } finally {
+    groupChatLoading.value = false
+  }
+}
+
+function addGroupChatWord() {
+  const word = groupChatWordDraft.value.trim()
+  if (!word) return
+  if (word.length > 120) {
+    groupChatError.value = '单个屏蔽词不能超过 120 个字符'
+    return
+  }
+  if (groupChatScope.value === 'group' && !selectedGroupChatGroupId.value) {
+    groupChatError.value = '请选择群聊'
+    return
+  }
+  let words = groupChatState.value.global_words
+  if (groupChatScope.value === 'group') {
+    const groupId = selectedGroupChatGroupId.value
+    groupChatState.value.groups[groupId] ??= { blocked_words: [] }
+    words = groupChatState.value.groups[groupId].blocked_words
+  }
+  if (words.some((item) => item.toLocaleLowerCase() === word.toLocaleLowerCase())) {
+    groupChatError.value = '屏蔽词已存在'
+    return
+  }
+  if (words.length >= 500) {
+    groupChatError.value = '屏蔽词数量已达上限'
+    return
+  }
+  words.push(word)
+  groupChatWordDraft.value = ''
+  groupChatError.value = ''
+}
+
+function removeGroupChatWord(index: number) {
+  groupChatWords.value.splice(index, 1)
+  groupChatError.value = ''
+}
+
+async function saveGroupChatState() {
+  saving.value = true
+  groupChatError.value = ''
+  error.value = ''
+  try {
+    const response = await api<PluginStateResponse<GroupChatManagementState>>(
+      '/api/plugins/group_chat_management/state',
+      json('PUT', { state: groupChatState.value }),
+    )
+    groupChatState.value = normalizeGroupChatState(response.state)
+    selectAvailableGroupChatGroup()
+    notice.value = '屏蔽词已保存'
+  } catch (reason) {
+    groupChatError.value = reason instanceof Error ? reason.message : '屏蔽词保存失败'
   } finally {
     saving.value = false
   }
@@ -804,6 +959,49 @@ onMounted(load)
           <div v-else class="plugin-empty-settings"><PackageOpen :size="22" /><span>{{ regexScope === 'global' ? '尚未添加全局正则' : '该角色卡尚未添加正则' }}</span></div>
         </section>
 
+        <section v-if="selected.id === 'group_chat_management'" class="plugin-section group-chat-editor-section">
+          <div class="plugin-section-heading group-chat-editor-heading">
+            <div><span class="eyebrow">WORD LISTS</span><h3>屏蔽词</h3></div>
+            <div class="group-chat-editor-actions">
+              <button class="button secondary" type="button" :disabled="groupChatLoading" @click="loadGroupChatEditor"><RotateCw :size="15" />刷新</button>
+              <button class="button primary" type="button" :disabled="saving || groupChatLoading" @click="saveGroupChatState"><Save :size="15" />保存</button>
+            </div>
+          </div>
+
+          <div v-if="groupChatError" class="notice error-notice"><CircleAlert :size="18" />{{ groupChatError }}</div>
+
+          <div class="group-chat-toolbar">
+            <div class="regex-scope-tabs" role="tablist" aria-label="屏蔽词范围">
+              <button type="button" role="tab" :aria-selected="groupChatScope === 'global'" :class="{ active: groupChatScope === 'global' }" @click="groupChatScope = 'global'">全局屏蔽词</button>
+              <button type="button" role="tab" :aria-selected="groupChatScope === 'group'" :class="{ active: groupChatScope === 'group' }" @click="groupChatScope = 'group'">分群屏蔽词</button>
+            </div>
+            <label v-if="groupChatScope === 'group'" class="group-chat-group-select">
+              <span>群聊</span>
+              <select v-model="selectedGroupChatGroupId" :disabled="!groupChatOptions.length">
+                <option v-if="!groupChatOptions.length" value="">暂无群聊</option>
+                <option v-for="group in groupChatOptions" :key="group.id" :value="group.id">{{ group.label }}</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="group-chat-add-row">
+            <label class="field">
+              <span>屏蔽词</span>
+              <input v-model="groupChatWordDraft" type="text" maxlength="120" aria-label="屏蔽词" @keydown.enter.prevent="addGroupChatWord" />
+            </label>
+            <button class="button secondary" type="button" :disabled="groupChatLoading || !groupChatWordDraft.trim() || (groupChatScope === 'group' && !selectedGroupChatGroupId)" @click="addGroupChatWord"><Plus :size="15" />添加</button>
+          </div>
+
+          <div v-if="groupChatLoading" class="group-chat-editor-loading">正在加载…</div>
+          <div v-else-if="groupChatWords.length" class="group-chat-word-list">
+            <div v-for="(word, index) in groupChatWords" :key="`${word}-${index}`" class="group-chat-word-item">
+              <span>{{ word }}</span>
+              <button class="icon-button danger" type="button" title="移除屏蔽词" @click="removeGroupChatWord(index)"><Trash2 :size="16" /></button>
+            </div>
+          </div>
+          <div v-else class="plugin-empty-settings"><PackageOpen :size="22" /><span>{{ groupChatScope === 'global' ? '暂无全局屏蔽词' : '本群暂无屏蔽词' }}</span></div>
+        </section>
+
         <section v-if="selected.id === 'memory_system'" class="plugin-section memory-dashboard-section">
           <div class="plugin-section-heading memory-dashboard-heading">
             <div><span class="eyebrow">MEMORY MAP</span><h3>记忆可视化</h3></div>
@@ -1007,6 +1205,7 @@ onMounted(load)
                   v-else-if="definition.type === 'string'"
                   :value="String(form[key] ?? '')"
                   :type="definition.format === 'password' ? 'password' : 'text'"
+                  :maxlength="definition.maxLength"
                   :autocomplete="definition.format === 'password' ? 'new-password' : undefined"
                   :placeholder="definition.format === 'password' && selected.secret_settings_configured?.[key] ? '已保存，留空则保持不变' : ''"
                   @input="updateTextSetting(key, $event)"

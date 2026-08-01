@@ -23,6 +23,7 @@ MAX_IMAGES_PER_MESSAGE = 4
 IMAGE_TOKEN_ESTIMATE = 1000
 
 CQ_IMAGE_URL_PATTERN = re.compile(r"\[CQ:(?:image|mface),[^\]]*?url=([^,\]\s]+)")
+CQ_AT_PATTERN = re.compile(r"\[CQ:at,(?P<params>[^\]]*)\]")
 CQ_CODE_PATTERN = re.compile(r"\[CQ:[^\]]+\]")
 DATA_IMAGE_PATTERN = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,", re.IGNORECASE)
 
@@ -55,6 +56,30 @@ def parse_cq_message(raw_message: str) -> tuple[str, list[str]]:
     image_urls = [unescape(url) for url in raw_urls]
     text = unescape(CQ_CODE_PATTERN.sub("", raw_message)).strip()
     return text, image_urls
+
+
+def parse_onebot_at_targets(raw_message: str, structured_message: object = None) -> set[str]:
+    """Return actual OneBot at-segment targets; plain-text @ characters never count."""
+    targets: set[str] = set()
+    if isinstance(structured_message, list):
+        for segment in structured_message:
+            if not isinstance(segment, dict) or str(segment.get("type", "")) != "at":
+                continue
+            data = segment.get("data")
+            if not isinstance(data, dict):
+                continue
+            target = unescape(str(data.get("qq", ""))).strip()
+            if target:
+                targets.add(target)
+    for match in CQ_AT_PATTERN.finditer(raw_message):
+        for part in match.group("params").split(","):
+            key, separator, value = part.partition("=")
+            if separator and key.strip() == "qq":
+                target = unescape(value).strip()
+                if target:
+                    targets.add(target)
+                break
+    return targets
 
 
 def sniff_image_mime(data: bytes, fallback: str | None = None) -> str:

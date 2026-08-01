@@ -9,6 +9,16 @@ def make_client(tmp_path: Path) -> TestClient:
     return TestClient(create_app(tmp_path / "data"))
 
 
+def test_frontend_html_is_never_reused_from_webview_cache(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.get("/?startup=cache-test")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate"
+        assert response.headers["pragma"] == "no-cache"
+        assert response.headers["expires"] == "0"
+
+
 def test_first_run_setup_locks_management_api_and_login_restores_access(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         assert client.get("/api/auth/status").json() == {

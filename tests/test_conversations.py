@@ -263,3 +263,45 @@ def test_manual_message_edit_preserves_floor_and_marks_qq_turn_as_edited(tmp_pat
         )
         assert rejected.status_code == 400
         assert "不属于当前记录" in rejected.json()["detail"]
+
+
+def test_failed_qq_turn_with_saved_messages_can_be_recalled(tmp_path: Path) -> None:
+    route_id = "qq:90001:private:6677"
+    with make_client(tmp_path) as client:
+        runtime = client.app.state.chat_runtime
+        turn = runtime.begin_qq_turn(route_id, "33001", "6677", "private")
+        user_message = runtime._append_message(turn.conversation_id, "user", "失败前已写入")
+        assistant_message = runtime._append_message(turn.conversation_id, "assistant", "失败前已回复")
+        runtime.record_turn_user_message(turn.id, user_message.id)
+        runtime.record_turn_assistant_message(turn.id, assistant_message.id)
+        runtime.mark_turn_failed(turn.id)
+
+        found = runtime.find_recall_turn(route_id, "33001", "6677")
+        assert found is not None and found.status == "failed"
+        prepared = runtime.prepare_turn_recall(turn.id)
+        assert prepared is not None and prepared.status == "recalling"
+        assert client.portal.call(runtime.rollback_turn, turn.id) == []
+        runtime.finish_turn_recall(route_id, turn.id)
+
+        assert client.get(
+            f"/api/runtime/conversations/{turn.conversation_id}/messages"
+        ).json() == []
+        with client.app.state.database.session_factory() as session:
+            saved_turn = session.get(ConversationTurn, turn.id)
+            assert saved_turn is not None and saved_turn.status == "recalled"
+
+
+def test_interrupted_recall_restores_a_retryable_turn_status(tmp_path: Path) -> None:
+    route_id = "qq:90001:private:6688"
+    with make_client(tmp_path) as client:
+        runtime = client.app.state.chat_runtime
+        turn = runtime.begin_qq_turn(route_id, "33002", "6688", "private")
+        runtime.mark_turn_completed(turn.id)
+
+        prepared = runtime.prepare_turn_recall(turn.id)
+        assert prepared is not None
+        runtime.recover_turn_recall(turn.id, "completed")
+        runtime.finish_turn_recall(route_id, turn.id)
+
+        retried = runtime.find_recall_turn(route_id, "33002", "6688")
+        assert retried is not None and retried.status == "completed"

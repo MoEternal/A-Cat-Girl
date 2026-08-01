@@ -1,4 +1,4 @@
-A Cat Girl v1.0.1 Linux web edition
+A Cat Girl v1.1.0 Linux web edition
 
 1. Extract the entire tar.gz archive to a local directory.
 2. Run: bash start.sh

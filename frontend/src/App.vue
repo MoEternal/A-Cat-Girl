@@ -151,7 +151,7 @@ function setThemeStage(value: number) {
         <Bot :size="18" />
         <div>
           <span class="status-line"><i :class="{ online }" />{{ online ? '服务正常' : '服务离线' }}</span>
-          <small>v1.0.1</small>
+          <small>v1.1.0</small>
         </div>
       </div>
     </aside>

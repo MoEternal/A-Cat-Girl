@@ -592,6 +592,15 @@ class ConversationUpdate(BaseModel):
     title: str = Field(min_length=1, max_length=240)
 
 
+class SillyTavernChatImportReport(BaseModel):
+    conversation: ConversationOut
+    imported_messages: int
+    skipped_messages: int
+    user_name: str = ""
+    character_name: str = ""
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ConversationMessagesDelete(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

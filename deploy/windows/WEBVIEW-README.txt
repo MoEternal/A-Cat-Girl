@@ -1,4 +1,4 @@
-一只猫娘 v1.0.1 Windows WebView 版
+一只猫娘 v1.1.0 Windows WebView 版
 
 1. 解压整个目录后运行“A Cat Girl.exe”，不要只复制 EXE。
 2. 如果系统缺少 WebView2，请运行包内的 MicrosoftEdgeWebview2Setup.exe。

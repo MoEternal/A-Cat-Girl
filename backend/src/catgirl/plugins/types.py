@@ -11,6 +11,7 @@ PLUGIN_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,79}$")
 SUPPORTED_HOOKS = {
     "on_startup",
     "on_shutdown",
+    "before_qq_message",
     "on_user_message",
     "before_prompt_compile",
     "transform_model_response",
@@ -101,6 +102,14 @@ class PluginManifest(BaseModel):
                 raise ValueError(f"设置项 {key} 使用了不支持的类型")
             if "enum" in definition and not isinstance(definition["enum"], list):
                 raise ValueError(f"设置项 {key} 的 enum 必须是数组")
+            max_length = definition.get("maxLength")
+            if max_length is not None and (
+                definition.get("type") != "string"
+                or not isinstance(max_length, int)
+                or isinstance(max_length, bool)
+                or max_length < 0
+            ):
+                raise ValueError(f"设置项 {key} 的 maxLength 必须是非负整数")
         return self
 
     def default_settings(self) -> dict[str, Any]:

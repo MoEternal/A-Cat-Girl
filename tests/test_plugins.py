@@ -522,6 +522,7 @@ def test_builtin_defaults_and_plugin_order_are_persisted(tmp_path: Path) -> None
         assert versions["segmented_reply"] == "1.0.0"
         assert versions["reply_merge"] == "1.0.0"
         assert [item["id"] for item in plugins] == [
+            "group_chat_management",
             "regex_filter",
             "recall",
             "memory_system",
@@ -607,6 +608,7 @@ def test_builtin_discovery_preserves_existing_enabled_choices(tmp_path: Path) ->
         with client.app.state.database.session_factory() as session:
             session.get(PluginInstallation, "memory_system").enabled = True
             session.get(PluginInstallation, "recall").enabled = False
+            session.get(PluginInstallation, "group_chat_management").enabled = True
             session.commit()
 
         manager.discover()
@@ -618,6 +620,207 @@ def test_builtin_discovery_preserves_existing_enabled_choices(tmp_path: Path) ->
         }
         assert "memory_system" in enabled
         assert "recall" not in enabled
+        assert "group_chat_management" in enabled
+
+
+def test_group_chat_management_commands_and_censor_are_scoped_per_group(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        enabled = client.put(
+            "/api/plugins/group_chat_management",
+            json={"enabled": True},
+        )
+        assert enabled.status_code == 200, enabled.text
+        manager = client.app.state.plugin_manager
+        record = manager.records["group_chat_management"]
+        context = PluginContext(manager, "group_chat_management", record.path)
+        command_defaults = {
+            key: definition["default"]
+            for key, definition in record.manifest.settings_schema["properties"].items()
+            if key.endswith("_command")
+        }
+        assert command_defaults == {
+            "add_command": "/添加屏蔽词 xxx",
+            "remove_command": "/移除屏蔽词 xxx",
+            "list_command": "/屏蔽词列表",
+            "clear_command": "/清空屏蔽词",
+        }
+        replacement_definition = record.manifest.settings_schema["properties"]["censor_replacement"]
+        assert replacement_definition == {
+            "type": "string",
+            "title": "屏蔽词替换符号",
+            "description": "屏蔽词替换设置。",
+            "default": "*",
+            "maxLength": 1,
+        }
+
+        def event(text: str, group_id: str = "7788", role: str = "admin") -> PluginEvent:
+            return PluginEvent(
+                name="before_qq_message",
+                conversation_id=f"qq:90001:group:{group_id}",
+                user_id="12345",
+                text=text,
+                metadata={
+                    "message_type": "group",
+                    "group_id": group_id,
+                    "sender_role": role,
+                    "mentioned_self": False,
+                    "has_media": False,
+                },
+            )
+
+        denied = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("/添加屏蔽词 秘密", role="member"),
+        )
+        assert denied.consume is True
+        assert denied.actions[0].payload["text"] == "仅群主或群管理员可以管理屏蔽词。"
+        assert context.state["groups"] == {}
+
+        added = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("/添加屏蔽词 秘密"),
+        )
+        assert added.consume is True
+        assert added.actions[0].payload["text"] == "已添加屏蔽词“秘密”。"
+        assert context.state["groups"]["7788"]["blocked_words"] == ["秘密"]
+        assert context.state["version"] == 2
+        assert context.state["global_words"] == []
+
+        filtered = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("这个秘密不能进入模型"),
+        )
+        assert filtered.consume is False
+        assert filtered.metadata["inbound_text"] == "这个**不能进入模型"
+
+        migrated = client.put(
+            "/api/plugins/group_chat_management/state",
+            json={
+                "state": {
+                    "version": 1,
+                    "groups": {"7788": {"blocked_words": ["秘密"]}},
+                }
+            },
+        )
+        assert migrated.status_code == 200, migrated.text
+        assert migrated.json()["state"] == {
+            "version": 2,
+            "global_words": [],
+            "groups": {"7788": {"blocked_words": ["秘密"]}},
+        }
+
+        scoped = client.put(
+            "/api/plugins/group_chat_management/state",
+            json={
+                "state": {
+                    "version": 2,
+                    "global_words": ["全局内容", "全局内容"],
+                    "groups": {"7788": {"blocked_words": ["秘密"]}},
+                }
+            },
+        )
+        assert scoped.status_code == 200, scoped.text
+        for target_group in ("7788", "8899"):
+            global_filtered = client.portal.call(
+                record.instance.before_qq_message,
+                context,
+                event("前全局内容后", group_id=target_group),
+            )
+            assert global_filtered.metadata["inbound_text"] == "前****后"
+
+        invalid_replacement = client.put(
+            "/api/plugins/group_chat_management",
+            json={"settings": {"censor_replacement": "**"}},
+        )
+        assert invalid_replacement.status_code == 400
+
+        updated = client.put(
+            "/api/plugins/group_chat_management",
+            json={
+                "settings": {
+                    "wake_prefix": "",
+                    "require_mention": False,
+                    "censor_replacement": "",
+                    "add_command": "!添加 xxx",
+                    "remove_command": "!移除 xxx",
+                    "list_command": "!列表",
+                    "clear_command": "!清空",
+                }
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        record = manager.records["group_chat_management"]
+        context = PluginContext(manager, "group_chat_management", record.path)
+        deleted = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("前秘密后"),
+        )
+        assert deleted.metadata["inbound_text"] == "前后"
+        emptied = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("秘密"),
+        )
+        assert emptied.consume is True
+        assert emptied.metadata["discard_reason"] == "empty_after_censor"
+
+        untouched = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("另一个群的秘密", group_id="8899"),
+        )
+        assert untouched.metadata["inbound_text"] == "另一个群的秘密"
+
+        old_list_command = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("/屏蔽词列表"),
+        )
+        assert old_list_command.consume is False
+        assert old_list_command.actions == []
+        assert old_list_command.metadata["inbound_text"] == "/屏蔽词列表"
+
+        custom_added = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("!添加 新词"),
+        )
+        assert custom_added.actions[0].payload["text"] == "已添加屏蔽词“新词”。"
+
+        listed = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("!列表"),
+        )
+        assert "1. 秘密" in listed.actions[0].payload["text"]
+        assert "2. 新词" in listed.actions[0].payload["text"]
+
+        removed = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("!移除 秘密"),
+        )
+        assert removed.actions[0].payload["text"] == "已移除屏蔽词“秘密”。"
+        assert context.state["groups"]["7788"]["blocked_words"] == ["新词"]
+
+        clear_warning = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("!清空"),
+        )
+        assert "!清空 确认" in clear_warning.actions[0].payload["text"]
+        cleared = client.portal.call(
+            record.instance.before_qq_message,
+            context,
+            event("!清空 确认"),
+        )
+        assert cleared.actions[0].payload["text"] == "已清空本群全部屏蔽词。"
+        assert context.state["groups"] == {}
+        assert context.state["global_words"] == ["全局内容"]
 
 
 def test_proactive_reply_state_machine_and_sleep_pause(tmp_path: Path) -> None:

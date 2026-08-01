@@ -23,7 +23,7 @@ from websockets.exceptions import ConnectionClosed
 from .action_executor import ActionExecutor
 from .chat_runtime import ChatRuntime
 from .database import ConfigurationPreset, ConversationTurn, Database, OneBotConfig, OneBotEvent, RuntimeAction
-from .media import parse_cq_message
+from .media import ensure_history_content_safe, parse_cq_message, parse_onebot_at_targets
 from .media_runtime import MediaReceiver
 from .model_client import ModelClientError, ModelHTTPError
 from .plugins.types import PluginAction, PluginEvent
@@ -38,6 +38,7 @@ MAX_OUTBOUND_IMAGE_BYTES = 32 * 1024 * 1024
 API_ERROR_RECALL_SECONDS = 60.0
 RECALL_POLL_INTERVAL_SECONDS = 2.0
 RECALL_POLL_WINDOW_SECONDS = 120.0
+EARLY_RECALL_TTL_SECONDS = 600.0
 TEST_INPUTS_REJECTED_PATTERN = re.compile(
     r"<!--\s*Test Inputs Were Rejected\s*-->",
     re.IGNORECASE,
@@ -84,6 +85,12 @@ class PendingMessageBatch:
     flush_task: asyncio.Task | None = None
 
 
+@dataclass(frozen=True)
+class EarlyRecall:
+    event_key: str
+    expires_at: float
+
+
 class OneBotGateway:
     def __init__(
         self,
@@ -105,6 +112,7 @@ class OneBotGateway:
         self.event_tasks: set[asyncio.Task] = set()
         self.turn_tasks: dict[str, asyncio.Task] = {}
         self.pending_message_batches: dict[tuple[str, str], PendingMessageBatch] = {}
+        self.early_recalls: dict[tuple[str, str, str], EarlyRecall] = {}
         self.forward_task: asyncio.Task | None = None
         self.reverse_server: Any | None = None
         self.reverse_server_url = ""
@@ -202,6 +210,9 @@ class OneBotGateway:
             for message in batch.messages:
                 self._finish_event(message.event_key, "cancelled")
         self.pending_message_batches.clear()
+        for recall in self.early_recalls.values():
+            self._finish_event(recall.event_key, "cancelled")
+        self.early_recalls.clear()
         self.connections.clear()
         self.turn_tasks.clear()
         self.action_executor.outbound_sender = None
@@ -457,6 +468,7 @@ class OneBotGateway:
             message_type = str(payload.get("message_type", ""))
             user_id = str(payload.get("user_id", ""))
             self_id = str(payload.get("self_id", connection.self_id))
+            group_id = ""
             if connection.self_id and self_id != connection.self_id:
                 self._finish_event(event_key, "failed", "事件 self_id 与连接账号不一致")
                 return
@@ -482,11 +494,68 @@ class OneBotGateway:
                 self._finish_event(event_key, "ignored")
                 return
 
-            text, image_urls = parse_cq_message(str(payload.get("raw_message", "")))
+            trigger_message_id = payload.get("message_id")
+            normalized_trigger_id = (
+                str(trigger_message_id) if trigger_message_id is not None else None
+            )
+            if normalized_trigger_id and self._consume_early_recall(
+                conversation_id,
+                user_id,
+                normalized_trigger_id,
+            ):
+                self._finish_event(event_key, "recalled")
+                LOGGER.info(
+                    "QQ 消息在处理前已撤回 | route=%s | message_id=%s",
+                    conversation_id,
+                    normalized_trigger_id,
+                )
+                return
+
+            raw_message = str(payload.get("raw_message", ""))
+            text, image_urls = parse_cq_message(raw_message)
+            at_targets = parse_onebot_at_targets(raw_message, payload.get("message"))
+            sender = payload.get("sender")
+            sender_role = str(sender.get("role", "")) if isinstance(sender, dict) else ""
+            preprocessed = await self.chat_runtime.plugin_manager.dispatch(
+                "before_qq_message",
+                PluginEvent(
+                    name="before_qq_message",
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    text=text,
+                    metadata={
+                        "channel": f"qq_{message_type}",
+                        "message_type": message_type,
+                        "group_id": group_id,
+                        "self_id": self_id,
+                        "sender_role": sender_role,
+                        "mentioned_self": self_id in at_targets,
+                        "has_media": bool(image_urls),
+                    },
+                ),
+            )
+            if normalized_trigger_id and self._consume_early_recall(
+                conversation_id,
+                user_id,
+                normalized_trigger_id,
+            ):
+                self._finish_event(event_key, "recalled")
+                LOGGER.info(
+                    "QQ 消息在写入前已撤回 | route=%s | message_id=%s",
+                    conversation_id,
+                    normalized_trigger_id,
+                )
+                return
+            if preprocessed.consume:
+                self._finish_event(event_key, "completed" if preprocessed.actions else "ignored")
+                return
+            inbound_text = preprocessed.metadata.get("inbound_text", text)
+            if isinstance(inbound_text, str):
+                text = inbound_text
+            ensure_history_content_safe(text)
             if not text and not image_urls:
                 self._finish_event(event_key, "empty")
                 return
-            trigger_message_id = payload.get("message_id")
             LOGGER.info(
                 "收到 QQ 消息 | route=%s | message_id=%s | images=%s",
                 conversation_id,
@@ -502,9 +571,7 @@ class OneBotGateway:
                 message_type=message_type,
                 text=text,
                 image_urls=image_urls,
-                trigger_message_id=(
-                    str(trigger_message_id) if trigger_message_id is not None else None
-                ),
+                trigger_message_id=normalized_trigger_id,
             )
             delay_seconds = self._reply_merge_delay()
             if delay_seconds > 0:
@@ -594,6 +661,55 @@ class OneBotGateway:
                 self.pending_message_batches.pop(key, None)
             return removed
         return None
+
+    @staticmethod
+    def _early_recall_key(
+        conversation_id: str,
+        user_id: str,
+        trigger_message_id: str,
+    ) -> tuple[str, str, str]:
+        return conversation_id, user_id, trigger_message_id
+
+    def _prune_early_recalls(self) -> None:
+        now = asyncio.get_running_loop().time()
+        expired = [
+            key for key, recall in self.early_recalls.items() if recall.expires_at <= now
+        ]
+        for key in expired:
+            recall = self.early_recalls.pop(key)
+            self._finish_event(recall.event_key, "ignored")
+
+    def _store_early_recall(
+        self,
+        conversation_id: str,
+        user_id: str,
+        trigger_message_id: str,
+        event_key: str,
+    ) -> None:
+        self._prune_early_recalls()
+        self.early_recalls[
+            self._early_recall_key(conversation_id, user_id, trigger_message_id)
+        ] = EarlyRecall(
+            event_key=event_key,
+            expires_at=asyncio.get_running_loop().time() + EARLY_RECALL_TTL_SECONDS,
+        )
+        self._finish_event(event_key, "buffered")
+
+    def _consume_early_recall(
+        self,
+        conversation_id: str,
+        user_id: str,
+        trigger_message_id: str,
+    ) -> bool:
+        self._prune_early_recalls()
+        recall = self.early_recalls.pop(
+            self._early_recall_key(conversation_id, user_id, trigger_message_id),
+            None,
+        )
+        if recall is None:
+            return False
+        self._finish_event(recall.event_key, "completed")
+        return True
 
     async def _process_inbound_messages(self, messages: list[InboundMessage]) -> None:
         if not messages:
@@ -812,6 +928,7 @@ class OneBotGateway:
             )
             return
         prepared_turn = None
+        recall_recovery_status = "failed"
         try:
             config = self._config()
             notice_type = str(payload.get("notice_type", ""))
@@ -869,10 +986,12 @@ class OneBotGateway:
                 LOGGER.info("忽略 QQ 撤回：通知类型不支持 | type=%s", notice_type or "unknown")
                 return
 
+            normalized_trigger_id = str(trigger_message_id)
+            recall_allowed = False
             pending_message = self._find_pending_message(
                 conversation_id,
                 user_id,
-                str(trigger_message_id),
+                normalized_trigger_id,
             )
             if pending_message is not None:
                 age_seconds = max(
@@ -886,7 +1005,7 @@ class OneBotGateway:
                         conversation_id=conversation_id,
                         user_id=user_id,
                         metadata={
-                            "trigger_message_id": str(trigger_message_id),
+                            "trigger_message_id": normalized_trigger_id,
                             "notice_type": notice_type,
                             "age_seconds": age_seconds,
                             "pending_batch": True,
@@ -896,10 +1015,11 @@ class OneBotGateway:
                 if not decision.metadata.get("allow_rollback"):
                     self._finish_event(event_key, "ignored")
                     return
+                recall_allowed = True
                 removed = self._remove_pending_message(
                     conversation_id,
                     user_id,
-                    str(trigger_message_id),
+                    normalized_trigger_id,
                 )
                 if removed is not None:
                     self._finish_event(event_key, "completed")
@@ -912,47 +1032,100 @@ class OneBotGateway:
 
             turn = self.chat_runtime.find_recall_turn(
                 conversation_id,
-                str(trigger_message_id),
+                normalized_trigger_id,
                 user_id,
             )
             if turn is None:
-                self._finish_event(event_key, "ignored")
-                LOGGER.info(
-                    "忽略 QQ 撤回：找不到可回滚回合 | route=%s | message_id=%s",
+                if not recall_allowed:
+                    decision = await self.chat_runtime.plugin_manager.dispatch(
+                        "on_message_recall",
+                        PluginEvent(
+                            name="on_message_recall",
+                            conversation_id=conversation_id,
+                            user_id=user_id,
+                            metadata={
+                                "trigger_message_id": normalized_trigger_id,
+                                "notice_type": notice_type,
+                                "age_seconds": 0.0,
+                                "pending_registration": True,
+                            },
+                        ),
+                    )
+                    if not decision.metadata.get("allow_rollback"):
+                        self._finish_event(event_key, "ignored")
+                        return
+                    recall_allowed = True
+
+                pending_message = self._find_pending_message(
                     conversation_id,
-                    trigger_message_id,
+                    user_id,
+                    normalized_trigger_id,
                 )
-                return
+                if pending_message is not None:
+                    removed = self._remove_pending_message(
+                        conversation_id,
+                        user_id,
+                        normalized_trigger_id,
+                    )
+                    if removed is not None:
+                        self._finish_event(event_key, "completed")
+                        LOGGER.info(
+                            "QQ 撤回已从待合并队列移除 | route=%s | message_id=%s",
+                            conversation_id,
+                            trigger_message_id,
+                        )
+                        return
+
+                turn = self.chat_runtime.find_recall_turn(
+                    conversation_id,
+                    normalized_trigger_id,
+                    user_id,
+                )
+                if turn is None:
+                    self._store_early_recall(
+                        conversation_id,
+                        user_id,
+                        normalized_trigger_id,
+                        event_key,
+                    )
+                    LOGGER.info(
+                        "QQ 撤回早于消息登记，等待原消息 | route=%s | message_id=%s",
+                        conversation_id,
+                        trigger_message_id,
+                    )
+                    return
             age_seconds = max(
                 0.0,
                 (
                     datetime.now(timezone.utc).replace(tzinfo=None) - turn.created_at
                 ).total_seconds(),
             )
-            decision = await self.chat_runtime.plugin_manager.dispatch(
-                "on_message_recall",
-                PluginEvent(
-                    name="on_message_recall",
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    metadata={
-                        "record_id": turn.conversation_id,
-                        "turn_id": turn.id,
-                        "trigger_message_id": str(trigger_message_id),
-                        "notice_type": notice_type,
-                        "age_seconds": age_seconds,
-                    },
-                ),
-            )
-            if not decision.metadata.get("allow_rollback"):
-                self._finish_event(event_key, "ignored")
-                LOGGER.info(
-                    "忽略 QQ 撤回：撤回插件未允许回滚 | route=%s | message_id=%s | age=%.2fs",
-                    conversation_id,
-                    trigger_message_id,
-                    age_seconds,
+            if not recall_allowed:
+                decision = await self.chat_runtime.plugin_manager.dispatch(
+                    "on_message_recall",
+                    PluginEvent(
+                        name="on_message_recall",
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        metadata={
+                            "record_id": turn.conversation_id,
+                            "turn_id": turn.id,
+                            "trigger_message_id": normalized_trigger_id,
+                            "notice_type": notice_type,
+                            "age_seconds": age_seconds,
+                        },
+                    ),
                 )
-                return
+                if not decision.metadata.get("allow_rollback"):
+                    self._finish_event(event_key, "ignored")
+                    LOGGER.info(
+                        "忽略 QQ 撤回：撤回插件未允许回滚 | route=%s | message_id=%s | age=%.2fs",
+                        conversation_id,
+                        trigger_message_id,
+                        age_seconds,
+                    )
+                    return
+            recall_recovery_status = "failed" if turn.status == "active" else turn.status
             prepared_turn = self.chat_runtime.prepare_turn_recall(turn.id)
             if prepared_turn is None:
                 self._finish_event(event_key, "ignored")
@@ -1005,6 +1178,10 @@ class OneBotGateway:
             LOGGER.error("QQ 撤回处理失败 | %s: %s", type(exc).__name__, exc)
         finally:
             if prepared_turn is not None:
+                self.chat_runtime.recover_turn_recall(
+                    prepared_turn.id,
+                    recall_recovery_status,
+                )
                 self.chat_runtime.finish_turn_recall(
                     prepared_turn.route_id,
                     prepared_turn.id,
@@ -1016,7 +1193,7 @@ class OneBotGateway:
         original_payload: dict[str, Any],
         turn_id: str,
     ) -> None:
-        """Fallback for NapCat setups that do not forward recall notices."""
+        """Fallback for OneBot implementations that do not forward recall notices."""
         message_id = original_payload.get("message_id")
         if message_id is None:
             return

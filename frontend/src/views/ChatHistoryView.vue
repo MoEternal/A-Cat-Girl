@@ -8,6 +8,7 @@ import {
   ChevronsDown,
   ChevronsUp,
   CircleAlert,
+  Download,
   ListChecks,
   MessageSquareText,
   Pencil,
@@ -21,7 +22,7 @@ import {
 
 import { api, json } from '../api'
 import { exportEnvelope, exportJsonToFolder } from '../exportJson'
-import type { ChatMessage, ConversationRecord } from '../types'
+import type { ChatMessage, ConversationRecord, SillyTavernChatImportReport } from '../types'
 
 const records = ref<ConversationRecord[]>([])
 const messages = ref<ChatMessage[]>([])
@@ -31,6 +32,7 @@ const loading = ref(true)
 const saving = ref(false)
 const deletingMessages = ref(false)
 const savingMessage = ref(false)
+const importing = ref(false)
 const error = ref('')
 const notice = ref('')
 const multiSelect = ref(false)
@@ -39,6 +41,7 @@ const editingMessageId = ref('')
 const editingContent = ref('')
 const editingFloorHeight = ref(0)
 const messageList = ref<HTMLElement | null>(null)
+const importInput = ref<HTMLInputElement | null>(null)
 const floorLimit = ref(100)
 const form = reactive({ title: '' })
 const routes = computed(() => Array.from(new Set(records.value.map((item) => item.external_id))))
@@ -159,6 +162,50 @@ async function createRecord() {
     notice.value = '新聊天记录已创建'
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '创建失败'
+  }
+}
+
+async function importChatRecords(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  if (!files.length || !selectedRoute.value) {
+    input.value = ''
+    return
+  }
+  const route = selectedRoute.value
+  importing.value = true
+  error.value = ''
+  notice.value = ''
+  let importedFiles = 0
+  let importedMessages = 0
+  let lastImportedId = ''
+  const failures: string[] = []
+  try {
+    for (const file of files) {
+      try {
+        const query = new URLSearchParams({ route_id: route, file_name: file.name })
+        const report = await api<SillyTavernChatImportReport>(
+          `/api/runtime/conversations/import/sillytavern?${query}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': file.type || 'application/octet-stream' },
+            body: file,
+          },
+        )
+        importedFiles += 1
+        importedMessages += report.imported_messages
+        lastImportedId = report.conversation.id
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : '导入失败'
+        failures.push(`${file.name}：${message}`)
+      }
+    }
+    if (lastImportedId) await load(lastImportedId, route)
+    if (importedFiles) notice.value = `已导入 ${importedFiles} 份记录，共 ${importedMessages} 条消息`
+    if (failures.length) error.value = failures.join('；')
+  } finally {
+    importing.value = false
+    input.value = ''
   }
 }
 
@@ -351,7 +398,11 @@ onMounted(() => {
     <aside class="item-rail history-rail">
       <div class="rail-heading">
         <div><span class="eyebrow">CHAT RECORDS</span><strong>{{ records.length }} 份记录</strong></div>
-        <button class="icon-button primary-icon" type="button" title="新建聊天记录" :disabled="!selectedRoute" @click="createRecord"><Plus :size="17" /></button>
+        <div class="history-rail-actions">
+          <input ref="importInput" class="visually-hidden" type="file" accept=".jsonl,.json,application/json,application/x-ndjson" multiple @change="importChatRecords" />
+          <button class="button secondary history-import-button" type="button" title="导入聊天记录" :disabled="!selectedRoute || importing" @click="importInput?.click()"><Download :size="16" />{{ importing ? '导入中' : '导入' }}</button>
+          <button class="icon-button primary-icon" type="button" title="新建聊天记录" :disabled="!selectedRoute" @click="createRecord"><Plus :size="17" /></button>
+        </div>
       </div>
       <div v-if="routes.length" class="history-route-select">
         <label class="field"><span>QQ 会话</span><select v-model="selectedRoute" @change="changeRoute"><option v-for="route in routes" :key="route" :value="route">{{ routeLabel(route) }}</option></select></label>

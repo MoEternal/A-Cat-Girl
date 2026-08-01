@@ -66,6 +66,7 @@ from .schemas import (
     RuntimeLogOut,
     RuntimeMessageRequest,
     RuntimeReplyOut,
+    SillyTavernChatImportReport,
     SillyTavernImportReport,
     SillyTavernImportRequest,
     UserPersonaCreate,
@@ -99,6 +100,7 @@ from .sillytavern_import import (
     normalize_sillytavern_preset,
     normalize_sillytavern_world_book,
 )
+from .sillytavern_chat_import import MAX_CHAT_IMPORT_BYTES, SillyTavernChatImportError
 from .token_counter import count_text_tokens
 
 
@@ -1772,6 +1774,33 @@ async def process_runtime_message(
 @router.get("/runtime/conversations", response_model=list[ConversationOut])
 def list_runtime_conversations(runtime: ChatRuntime = Depends(get_chat_runtime)):
     return runtime.list_conversations()
+
+
+@router.post(
+    "/runtime/conversations/import/sillytavern",
+    response_model=SillyTavernChatImportReport,
+    status_code=status.HTTP_201_CREATED,
+)
+async def import_sillytavern_chat_record(
+    request: Request,
+    route_id: str = Query(min_length=1, max_length=200),
+    file_name: str = Query(min_length=1, max_length=260),
+    runtime: ChatRuntime = Depends(get_chat_runtime),
+):
+    content_length = request.headers.get("content-length", "").strip()
+    if content_length:
+        try:
+            if int(content_length) > MAX_CHAT_IMPORT_BYTES:
+                raise HTTPException(status_code=413, detail="聊天记录文件不能超过 32 MB")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="聊天记录文件大小无效") from None
+    data = await request.body()
+    if len(data) > MAX_CHAT_IMPORT_BYTES:
+        raise HTTPException(status_code=413, detail="聊天记录文件不能超过 32 MB")
+    try:
+        return await runtime.import_sillytavern_chat_record(route_id, file_name, data)
+    except (ChatRuntimeError, SillyTavernChatImportError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post(

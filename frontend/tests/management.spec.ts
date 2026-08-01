@@ -135,6 +135,24 @@ async function mockRegexState(page: import('@playwright/test').Page) {
   })
 }
 
+async function mockGroupChatState(page: import('@playwright/test').Page) {
+  let state = {
+    version: 2,
+    global_words: [],
+    groups: { '7788': { blocked_words: ['本群词'] } },
+  } as Record<string, unknown>
+  await page.route('**/api/plugins/group_chat_management/state', async (route) => {
+    if (route.request().method() === 'PUT') {
+      const payload = route.request().postDataJSON() as { state?: Record<string, unknown> }
+      state = payload.state ?? state
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ state }),
+    })
+  })
+}
+
 async function mockSearchModels(page: import('@playwright/test').Page) {
   await page.route('**/api/plugins/web_search/models', async (route) => {
     await route.fulfill({
@@ -280,6 +298,7 @@ test('desktop management pages render and remain usable', async ({ page, request
   })
   await mockMemoryState(page)
   await mockRegexState(page)
+  await mockGroupChatState(page)
   await mockSearchModels(page)
   await page.route('**/api/providers/*/models', async (route) => {
     await route.fulfill({
@@ -422,6 +441,29 @@ test('desktop management pages render and remain usable', async ({ page, request
   expect(await page.locator('.plugin-drag-handle').count()).toBeGreaterThanOrEqual(9)
   await expect(page.locator('.plugin-drag-handle').first()).toHaveAttribute('title', '拖动排序')
   await expect(page.getByRole('button', { name: /网络搜索/ })).toBeVisible()
+  await page.getByRole('button', { name: /群聊管理/ }).click()
+  await expect(page.getByRole('textbox', { name: /^AI 唤醒词/ })).toHaveValue('')
+  await expect(page.getByRole('checkbox', { name: /^@AI 后回复/ })).not.toBeChecked()
+  const replacementSymbol = page.getByRole('textbox', { name: /^屏蔽词替换符号/ })
+  await expect(replacementSymbol).toHaveValue('*')
+  await expect(replacementSymbol).toHaveAttribute('maxlength', '1')
+  await expect(page.getByRole('textbox', { name: /^添加屏蔽词命令/ })).toHaveValue('/添加屏蔽词 xxx')
+  await expect(page.getByRole('textbox', { name: /^移除屏蔽词命令/ })).toHaveValue('/移除屏蔽词 xxx')
+  await expect(page.getByRole('textbox', { name: /^屏蔽词列表命令/ })).toHaveValue('/屏蔽词列表')
+  await expect(page.getByRole('textbox', { name: /^清空屏蔽词命令/ })).toHaveValue('/清空屏蔽词')
+  const groupChatEditor = page.locator('.group-chat-editor-section')
+  await expect(groupChatEditor.getByRole('heading', { name: '屏蔽词' })).toBeVisible()
+  await expect(groupChatEditor.getByRole('tab', { name: '全局屏蔽词' })).toHaveAttribute('aria-selected', 'true')
+  await groupChatEditor.getByLabel('屏蔽词', { exact: true }).fill('全局测试词')
+  await groupChatEditor.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(groupChatEditor.getByText('全局测试词', { exact: true })).toBeVisible()
+  await groupChatEditor.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByText('屏蔽词已保存')).toBeVisible()
+  await groupChatEditor.getByRole('tab', { name: '分群屏蔽词' }).click()
+  await expect(groupChatEditor.locator('.group-chat-group-select select')).toHaveValue('7788')
+  await expect(groupChatEditor.getByText('本群词', { exact: true })).toBeVisible()
+  await expectNoHorizontalOverflow(page)
+  await page.screenshot({ path: 'test-results/group-chat-management-desktop.png', fullPage: true })
   await page.getByRole('button', { name: /^正则/ }).click()
   await expect(page.getByRole('heading', { name: '正则脚本' })).toBeVisible()
   await expect(page.getByRole('tab', { name: '全局正则' })).toHaveAttribute('aria-selected', 'true')
@@ -660,10 +702,25 @@ test('mobile plugin manager keeps settings and navigation usable', async ({ page
   await page.setViewportSize({ width: 390, height: 844 })
   await mockMemoryState(page)
   await mockRegexState(page)
+  await mockGroupChatState(page)
   await mockSearchModels(page)
   await page.goto('/#/plugins')
   await expect(page.getByRole('heading', { name: '插件', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: /网络搜索/ })).toBeVisible()
+  await page.getByRole('button', { name: /群聊管理/ }).click()
+  await expect(page.getByRole('textbox', { name: /^AI 唤醒词/ })).toBeVisible()
+  await expect(page.getByRole('checkbox', { name: /^@AI 后回复/ })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: /^屏蔽词替换符号/ })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: /^添加屏蔽词命令/ })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: /^移除屏蔽词命令/ })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: /^屏蔽词列表命令/ })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: /^清空屏蔽词命令/ })).toBeVisible()
+  const mobileGroupChatEditor = page.locator('.group-chat-editor-section')
+  await expect(mobileGroupChatEditor.getByRole('tab', { name: '全局屏蔽词' })).toBeVisible()
+  await mobileGroupChatEditor.getByRole('tab', { name: '分群屏蔽词' }).click()
+  await expect(mobileGroupChatEditor.locator('.group-chat-group-select select')).toHaveValue('7788')
+  await expectNoHorizontalOverflow(page)
+  await page.screenshot({ path: 'test-results/group-chat-management-mobile.png', fullPage: true })
   await page.getByRole('button', { name: /回复合并/ }).click()
   await expect(page.getByText('合并等待时间（秒）')).toBeVisible()
   await page.getByRole('button', { name: /表情回复/ }).click()
@@ -752,6 +809,7 @@ test('chat records for one QQ can be previewed and switched on mobile', async ({
     await page.getByRole('button', { name: '保存名称' }).click()
     await expect(page.getByLabel('聊天记录名称')).toHaveValue('记录乙已切换')
     await expect(page.getByTitle('导出聊天记录')).toBeVisible()
+    await expect(page.getByRole('button', { name: '导入', exact: true })).toBeVisible()
     await expect(page.locator('.main-nav a')).toHaveCount(10)
     await expect(page.locator('.sidebar')).toHaveCSS('height', '112px')
     await expectNoHorizontalOverflow(page)
@@ -759,6 +817,57 @@ test('chat records for one QQ can be previewed and switched on mobile', async ({
   } finally {
     await request.delete(`/api/runtime/conversations/${first.id}`)
     await request.delete(`/api/runtime/conversations/${second.id}`)
+  }
+})
+
+test('SillyTavern chat files can be imported into the selected QQ record', async ({ page, request }) => {
+  const target = String(Date.now())
+  const route = `qq:90001:private:${target}`
+  const originalResponse = await request.post('/api/runtime/conversations', {
+    data: { route_id: route, title: '导入目标' },
+  })
+  expect(originalResponse.ok()).toBeTruthy()
+  const original = await originalResponse.json() as { id: string }
+
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/#/chat-history')
+    await page.locator('.history-route-select select').selectOption(route)
+    const content = [
+      { user_name: '墨墨', character_name: '柏柏', create_date: '2026-07-01T12:00:00Z', chat_metadata: {} },
+      { name: '墨墨', is_user: true, is_system: false, send_date: '2026-07-01T12:01:00Z', mes: '从酒馆导入的提问' },
+      { name: '柏柏', is_user: false, is_system: false, send_date: '2026-07-01T12:02:00Z', mes: '从酒馆导入的回复', extra: { reasoning: '导入的思考内容' } },
+    ].map((item) => JSON.stringify(item)).join('\n')
+    await page.locator('input[type="file"][accept*=".jsonl"]').setInputFiles({
+      name: '酒馆旧记录.jsonl',
+      mimeType: 'application/x-ndjson',
+      buffer: Buffer.from(content, 'utf-8'),
+    })
+
+    await expect(page.getByText('已导入 1 份记录，共 2 条消息')).toBeVisible()
+    await expect(page.getByLabel('聊天记录名称')).toHaveValue('酒馆旧记录')
+    await expect(page.getByRole('button', { name: '使用这份记录' })).toBeVisible()
+    await expect(page.getByText('从酒馆导入的提问')).toBeVisible()
+    await expect(page.getByText('从酒馆导入的回复')).toBeVisible()
+    await expect(page.getByText('墨墨', { exact: true })).toBeVisible()
+    await expect(page.getByText('柏柏', { exact: true })).toBeVisible()
+    const reasoning = page.locator('.history-reasoning')
+    await reasoning.locator('summary').click()
+    await expect(reasoning.locator('pre')).toHaveText('导入的思考内容')
+
+    const recordsResponse = await request.get('/api/runtime/conversations')
+    const records = await recordsResponse.json() as Array<{ id: string, external_id: string, is_active: boolean }>
+    const routeRecords = records.filter((item) => item.external_id === route)
+    expect(routeRecords).toHaveLength(2)
+    expect(routeRecords.find((item) => item.id === original.id)?.is_active).toBe(true)
+    expect(routeRecords.find((item) => item.id !== original.id)?.is_active).toBe(false)
+  } finally {
+    const recordsResponse = await request.get('/api/runtime/conversations')
+    const records = await recordsResponse.json() as Array<{ id: string, external_id: string }>
+    for (const record of records.filter((item) => item.external_id === route && item.id !== original.id)) {
+      await request.delete(`/api/runtime/conversations/${record.id}`)
+    }
+    await request.delete(`/api/runtime/conversations/${original.id}`)
   }
 })
 

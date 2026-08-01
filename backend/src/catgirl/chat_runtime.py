@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -53,6 +53,7 @@ from .plugins.types import PluginAction, PluginEvent
 from .prompt_compiler import CompiledMessage, compile_prompt_messages
 from .response_parser import parse_model_response
 from .security import SecretBox
+from .sillytavern_chat_import import parse_sillytavern_chat
 from .token_counter import count_text_tokens
 
 
@@ -1046,7 +1047,7 @@ class ChatRuntime:
                 .where(
                     ConversationTurn.route_id == conversation_id,
                     ConversationTurn.trigger_user_id == str(trigger_user_id),
-                    ConversationTurn.status.in_(("active", "completed")),
+                    ConversationTurn.status.in_(("active", "completed", "failed")),
                 )
                 .order_by(ConversationTurn.created_at.desc())
             ).all()
@@ -1067,7 +1068,7 @@ class ChatRuntime:
     def prepare_turn_recall(self, turn_id: str) -> ConversationTurn | None:
         with self.database.session_factory() as session:
             turn = session.get(ConversationTurn, turn_id)
-            if turn is None or turn.status not in {"active", "completed"}:
+            if turn is None or turn.status not in {"active", "completed", "failed"}:
                 return None
             turn.status = "recalling"
             session.commit()
@@ -1079,6 +1080,14 @@ class ChatRuntime:
             self._recall_events[turn.route_id] = event
         self._recall_turns[turn.route_id] = turn.id
         return turn
+
+    def recover_turn_recall(self, turn_id: str, status: str) -> None:
+        recovery_status = status if status in {"completed", "failed"} else "failed"
+        with self.database.session_factory() as session:
+            turn = session.get(ConversationTurn, turn_id)
+            if turn is not None and turn.status == "recalling":
+                turn.status = recovery_status
+                session.commit()
 
     def finish_turn_recall(self, conversation_id: str, turn_id: str) -> None:
         if self._recall_turns.get(conversation_id) != turn_id:
@@ -1589,6 +1598,74 @@ class ChatRuntime:
             session.expunge(conversation)
         self.plugin_manager.conversation_created(conversation.id)
         return conversation
+
+    async def import_sillytavern_chat_record(
+        self,
+        route_id: str,
+        file_name: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        route_id = route_id.strip()
+        if not route_id:
+            raise ChatRuntimeError("目标会话不能为空")
+        parsed = parse_sillytavern_chat(data, file_name)
+
+        async with self._lock(route_id):
+            with self.database.session_factory() as session:
+                base = session.scalar(
+                    select(Conversation)
+                    .where(Conversation.external_id == route_id)
+                    .order_by(Conversation.is_active.desc(), Conversation.created_at)
+                )
+                if base is None:
+                    raise ChatRuntimeError("目标会话不存在")
+
+                fallback_start = parsed.created_at or utcnow()
+                message_dates = [
+                    message.created_at or fallback_start + timedelta(microseconds=position)
+                    for position, message in enumerate(parsed.messages)
+                ]
+                conversation = Conversation(
+                    id=new_id(),
+                    channel=base.channel,
+                    external_id=route_id,
+                    title=parsed.title,
+                    is_active=False,
+                    created_at=parsed.created_at or min(message_dates),
+                    updated_at=max(message_dates),
+                )
+                session.add(conversation)
+                session.add_all(
+                    [
+                        ChatMessage(
+                            conversation_id=conversation.id,
+                            position=position,
+                            role=message.role,
+                            content=message.content,
+                            status="complete",
+                            source="import:sillytavern",
+                            model=message.model,
+                            message_metadata=dict(message.metadata),
+                            created_at=message_dates[position],
+                        )
+                        for position, message in enumerate(parsed.messages)
+                    ]
+                )
+                session.commit()
+                conversation_id = conversation.id
+
+        self.plugin_manager.conversation_created(conversation_id)
+        summary = next(
+            item for item in self.list_conversations() if item["id"] == conversation_id
+        )
+        return {
+            "conversation": summary,
+            "imported_messages": len(parsed.messages),
+            "skipped_messages": parsed.skipped_messages,
+            "user_name": parsed.user_name,
+            "character_name": parsed.character_name,
+            "warnings": list(parsed.warnings),
+        }
 
     def rename_conversation_record(self, conversation_id: str, title: str) -> Conversation:
         with self.database.session_factory() as session:

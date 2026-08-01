@@ -1,0 +1,65 @@
+{
+  "id": "group_chat_management",
+  "name": "群聊管理",
+  "version": "1.0.0",
+  "description": "群聊功能管理。",
+  "entrypoint": "plugin.py",
+  "author": "MoEternal",
+  "min_app_version": "1.0.0",
+  "default_enabled": false,
+  "permissions": ["message.send.text", "state.persist"],
+  "hooks": ["before_qq_message"],
+  "initial_state": {
+    "version": 2,
+    "global_words": [],
+    "groups": {}
+  },
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "wake_prefix": {
+        "type": "string",
+        "title": "AI 唤醒词",
+        "description": "AI 唤醒设置。",
+        "default": ""
+      },
+      "require_mention": {
+        "type": "boolean",
+        "title": "@AI 后回复",
+        "description": "@AI 回复设置。",
+        "default": false
+      },
+      "censor_replacement": {
+        "type": "string",
+        "title": "屏蔽词替换符号",
+        "description": "屏蔽词替换设置。",
+        "default": "*",
+        "maxLength": 1
+      },
+      "add_command": {
+        "type": "string",
+        "title": "添加屏蔽词命令",
+        "description": "命令设置。",
+        "default": "/添加屏蔽词 xxx"
+      },
+      "remove_command": {
+        "type": "string",
+        "title": "移除屏蔽词命令",
+        "description": "命令设置。",
+        "default": "/移除屏蔽词 xxx"
+      },
+      "list_command": {
+        "type": "string",
+        "title": "屏蔽词列表命令",
+        "description": "命令设置。",
+        "default": "/屏蔽词列表"
+      },
+      "clear_command": {
+        "type": "string",
+        "title": "清空屏蔽词命令",
+        "description": "命令设置。",
+        "default": "/清空屏蔽词"
+      }
+    }
+  }
+}

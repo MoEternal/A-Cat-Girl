@@ -17,6 +17,7 @@ from catgirl.media import (
     estimate_message_tokens,
     normalize_image_bytes,
     parse_cq_message,
+    parse_onebot_at_targets,
     sniff_image_mime,
 )
 from catgirl.media_runtime import MediaReceiver
@@ -37,6 +38,19 @@ def test_cq_image_and_mface_urls_are_extracted_before_html_unescape() -> None:
 
     assert text == "看图"
     assert urls == ["https://img.example/a.png", "https://img.example/b.gif?x=1&y=2"]
+
+
+def test_real_onebot_at_targets_are_distinct_from_plain_text_mentions() -> None:
+    assert parse_onebot_at_targets("普通文本 @90001") == set()
+    assert parse_onebot_at_targets("[CQ:at,qq=90001,name=机器人] 你好") == {"90001"}
+    assert parse_onebot_at_targets(
+        "结构化消息",
+        [
+            {"type": "text", "data": {"text": "@机器人"}},
+            {"type": "at", "data": {"qq": 90001}},
+            {"type": "at", "data": {"qq": "all"}},
+        ],
+    ) == {"90001", "all"}
 
 
 def test_real_bytes_override_declared_mime_and_gif_becomes_static_png() -> None:

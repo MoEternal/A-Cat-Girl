@@ -44,6 +44,7 @@ ADMIN_ASSET_SUFFIXES = {
 }
 BUILT_IN_DEFAULT_PROFILE_VERSION = "20260728-v1"
 BUILT_IN_DEFAULT_ORDER = (
+    "group_chat_management",
     "regex_filter",
     "recall",
     "memory_system",
@@ -922,6 +923,10 @@ class PluginManager:
             actions.extend(result.actions)
             consume = consume or result.consume
             metadata.update(result.metadata)
+            if hook == "before_qq_message":
+                inbound_text = result.metadata.get("inbound_text")
+                if isinstance(inbound_text, str):
+                    normalized_event = normalized_event.model_copy(update={"text": inbound_text})
             if result.consume:
                 break
         return PluginResult(actions=actions, consume=consume, metadata=metadata)
@@ -1031,6 +1036,9 @@ class PluginManager:
                     raise PluginError(f"设置项 {key} 不能小于 {definition['minimum']}")
                 if "maximum" in definition and value > definition["maximum"]:
                     raise PluginError(f"设置项 {key} 不能大于 {definition['maximum']}")
+            if isinstance(value, str) and "maxLength" in definition:
+                if len(value) > definition["maxLength"]:
+                    raise PluginError(f"设置项 {key} 不能超过 {definition['maxLength']} 个字符")
         return normalized
 
     async def configure(
